@@ -1,10 +1,65 @@
 import sys
 import os
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QStyledItemDelegate, QVBoxLayout, QWidget, QTableWidget, QTableWidgetItem, QHeaderView, QHBoxLayout, QFileDialog, QInputDialog, QDialog, QDialogButtonBox, QCheckBox, QDesktopWidget, QTimeEdit, QLineEdit, QGraphicsDropShadowEffect, QFrame
+import io
+import subprocess
+import tempfile
+from importlib import import_module, util
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QLabel,
+    QPushButton,
+    QStyledItemDelegate,
+    QVBoxLayout,
+    QWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QHBoxLayout,
+    QFileDialog,
+    QInputDialog,
+    QDialog,
+    QDialogButtonBox,
+    QCheckBox,
+    QDesktopWidget,
+    QTimeEdit,
+    QLineEdit,
+    QGraphicsDropShadowEffect,
+    QFrame,
+    QMessageBox,
+    QToolButton,
+    QStyle,
+    QProgressDialog,
+)
 from PyQt5.QtCore import Qt, QTimer, QTime, QUrl, QDate, QDateTime
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 import sqlite3
+
+
+APP_VERSION = "1.2.22"
+DRIVE_FOLDER_ID = "1qUpWNd2fvUAQrq9ZumfvzaxzsuyRK12Y"
+VERSION_FILE_NAME = "versao.txt"
+REMOTE_EXECUTABLE_NAME = "Sinal.exe"
+DEFAULT_CREDENTIALS_FILE = "service_account.json"
+
+
+def _resolve_google_modules():
+    required_modules = {
+        "google.oauth2.service_account": None,
+        "googleapiclient.discovery": None,
+        "googleapiclient.http": None,
+    }
+
+    missing = [name for name in required_modules if util.find_spec(name) is None]
+    if missing:
+        return None, missing
+
+    for name in required_modules:
+        required_modules[name] = import_module(name)
+
+    return required_modules, []
+
 
 def add_drop_shadow(widget, blur_radius=16, x_offset=0, y_offset=3, opacity=110):
     shadow = QGraphicsDropShadowEffect(widget)
@@ -12,6 +67,152 @@ def add_drop_shadow(widget, blur_radius=16, x_offset=0, y_offset=3, opacity=110)
     shadow.setOffset(x_offset, y_offset)
     shadow.setColor(QColor(0, 0, 0, opacity))
     widget.setGraphicsEffect(shadow)
+
+
+class UpdateManager:
+    def __init__(self, parent=None):
+        self.parent = parent
+        self._drive_service = None
+        modules, missing = _resolve_google_modules()
+        if missing:
+            self._availability_error = (
+                "Bibliotecas do Google Drive ausentes: "
+                + ", ".join(missing)
+                + ". Instale-as para habilitar as atualizações automáticas."
+            )
+            self._modules = None
+        else:
+            self._availability_error = None
+            self._modules = modules
+
+    def is_available(self):
+        return self._availability_error is None
+
+    def availability_error(self):
+        return self._availability_error
+
+    def application_directory(self):
+        if getattr(sys, "frozen", False):
+            return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.abspath(__file__))
+
+    def _credentials_path(self):
+        env_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if env_path and os.path.exists(env_path):
+            return env_path
+
+        default_path = os.path.join(self.application_directory(), DEFAULT_CREDENTIALS_FILE)
+        if os.path.exists(default_path):
+            return default_path
+
+        raise FileNotFoundError(
+            "Arquivo de credenciais do Google Drive não encontrado. Configure a variável"
+            " de ambiente GOOGLE_APPLICATION_CREDENTIALS ou coloque o arquivo"
+            f" {DEFAULT_CREDENTIALS_FILE} na pasta do aplicativo."
+        )
+
+    def _get_service(self):
+        if not self.is_available():
+            raise RuntimeError(self._availability_error)
+        if self._drive_service is None:
+            credentials_path = self._credentials_path()
+            creds = self._modules["google.oauth2.service_account"].Credentials.from_service_account_file(
+                credentials_path,
+                scopes=["https://www.googleapis.com/auth/drive"],
+            )
+            build_service = self._modules["googleapiclient.discovery"].build
+            self._drive_service = build_service(
+                "drive", "v3", credentials=creds, cache_discovery=False
+            )
+        return self._drive_service
+
+    def _get_file_id(self, file_name):
+        service = self._get_service()
+        query = f"'{DRIVE_FOLDER_ID}' in parents and name='{file_name}' and trashed=false"
+        result = (
+            service.files()
+            .list(q=query, spaces="drive", fields="files(id, name)", pageSize=1)
+            .execute()
+        )
+        files = result.get("files", [])
+        if not files:
+            raise FileNotFoundError(f"Arquivo '{file_name}' não encontrado na pasta compartilhada.")
+        return files[0]["id"]
+
+    @staticmethod
+    def _version_tuple(version):
+        return tuple(int(part) for part in version.strip().split('.'))
+
+    def fetch_remote_version(self):
+        service = self._get_service()
+        file_id = self._get_file_id(VERSION_FILE_NAME)
+        request = service.files().get_media(fileId=file_id)
+        buffer = io.BytesIO()
+        downloader = self._modules["googleapiclient.http"].MediaIoBaseDownload(
+            buffer, request
+        )
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buffer.getvalue().decode('utf-8').strip()
+
+    def has_newer_version(self, current_version):
+        remote_version = self.fetch_remote_version()
+        return self._version_tuple(remote_version) > self._version_tuple(current_version), remote_version
+
+    def download_update(self, progress_callback=None, cancel_callback=None):
+        service = self._get_service()
+        file_id = self._get_file_id(REMOTE_EXECUTABLE_NAME)
+        request = service.files().get_media(fileId=file_id)
+        fd, temp_path = tempfile.mkstemp(suffix=".exe")
+        os.close(fd)
+
+        try:
+            with open(temp_path, 'wb') as file_handle:
+                downloader = self._modules["googleapiclient.http"].MediaIoBaseDownload(
+                    file_handle, request
+                )
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    if status and progress_callback:
+                        progress_callback(int(status.progress() * 100))
+                    if cancel_callback and cancel_callback():
+                        raise RuntimeError("Atualização cancelada pelo usuário.")
+            return temp_path
+        except Exception:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise
+
+    def apply_update(self, downloaded_path):
+        if not getattr(sys, 'frozen', False):
+            raise RuntimeError(
+                "A atualização automática está disponível apenas na versão instalada do aplicativo."
+            )
+
+        current_executable = os.path.normpath(sys.executable)
+        update_script_path = os.path.join(self.application_directory(), "atualizar.bat")
+
+        script_content = (
+            "@echo off\n"
+            "setlocal\n"
+            "timeout /t 1 /nobreak >nul\n"
+            f"copy /Y \"{os.path.normpath(downloaded_path)}\" \"{current_executable}\" >nul\n"
+            "if %errorlevel% neq 0 (\n"
+            "    echo Falha ao atualizar o aplicativo.\n"
+            "    exit /b %errorlevel%\n"
+            ")\n"
+            f"del \"{os.path.normpath(downloaded_path)}\"\n"
+            f"start \"\" \"{current_executable}\"\n"
+            "del \"%~f0\"\n"
+        )
+
+        with open(update_script_path, 'w', encoding='utf-8') as script_file:
+            script_file.write(script_content)
+
+        subprocess.Popen(['cmd', '/c', update_script_path], shell=False)
+        return update_script_path
 
 
 class EditDialog(QDialog):
@@ -565,6 +766,7 @@ class InfoDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Informações do App")
         self.setStyleSheet("background-color: white;")
+        self.update_manager = UpdateManager(self)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(24, 20, 24, 20)
         self.layout.setSpacing(20)
@@ -607,11 +809,35 @@ class InfoDialog(QDialog):
 
         self.layout.addWidget(tips_container)
 
-        self.info_label = QLabel("Versão 1.2.21<br>Desenvolvido por Luiz Gustavo Stelo<br>ASM", self)
-        self.info_label.setAlignment(Qt.AlignCenter)
-        self.info_label.setFont(info_font)
-        self.info_label.setStyleSheet("color: #333333;")
-        self.layout.addWidget(self.info_label)
+        version_layout = QHBoxLayout()
+        version_layout.setSpacing(8)
+        version_layout.setAlignment(Qt.AlignCenter)
+
+        self.version_label = QLabel(f"Versão {APP_VERSION}", self)
+        self.version_label.setFont(info_font)
+        self.version_label.setStyleSheet("color: #333333;")
+        version_layout.addWidget(self.version_label)
+
+        self.update_button = QToolButton(self)
+        self.update_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.update_button.setToolTip("Verificar atualizações")
+        self.update_button.setAutoRaise(True)
+        self.update_button.setStyleSheet("background-color: transparent;")
+        self.update_button.clicked.connect(self.check_for_updates)
+        if not self.update_manager.is_available():
+            self.update_button.setEnabled(False)
+            self.update_button.setToolTip(self.update_manager.availability_error())
+        version_layout.addWidget(self.update_button)
+
+        version_widget = QWidget(self)
+        version_widget.setLayout(version_layout)
+        self.layout.addWidget(version_widget)
+
+        self.developer_label = QLabel("Desenvolvido por Luiz Gustavo Stelo<br>ASM", self)
+        self.developer_label.setAlignment(Qt.AlignCenter)
+        self.developer_label.setFont(info_font)
+        self.developer_label.setStyleSheet("color: #333333;")
+        self.layout.addWidget(self.developer_label)
 
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -624,6 +850,105 @@ class InfoDialog(QDialog):
         button_layout.addWidget(self.ok_button)
         button_layout.addStretch()
         self.layout.addLayout(button_layout)
+
+    def check_for_updates(self):
+        if not self.update_manager.is_available():
+            QMessageBox.information(
+                self,
+                "Atualizações",
+                self.update_manager.availability_error(),
+            )
+            return
+        try:
+            has_update, remote_version = self.update_manager.has_newer_version(APP_VERSION)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Atualizações",
+                f"Não foi possível verificar atualizações.\n{exc}",
+            )
+            return
+
+        if not has_update:
+            QMessageBox.information(
+                self,
+                "Atualizações",
+                "Você já está utilizando a versão mais recente do aplicativo.",
+            )
+            return
+
+        response = QMessageBox.question(
+            self,
+            "Atualização disponível",
+            (
+                f"Uma nova versão ({remote_version}) está disponível.\n"
+                "Deseja baixar e instalar agora?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+
+        if response != QMessageBox.Yes:
+            return
+
+        progress_dialog = QProgressDialog(
+            "Baixando atualização...", "Cancelar", 0, 100, self
+        )
+        progress_dialog.setWindowTitle("Atualização")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setValue(0)
+        progress_dialog.show()
+
+        def progress_callback(value):
+            progress_dialog.setValue(value)
+            QApplication.processEvents()
+
+        def cancel_callback():
+            QApplication.processEvents()
+            return progress_dialog.wasCanceled()
+
+        try:
+            downloaded_path = self.update_manager.download_update(
+                progress_callback=progress_callback,
+                cancel_callback=cancel_callback,
+            )
+            progress_dialog.setValue(100)
+        except RuntimeError as exc:
+            progress_dialog.close()
+            QMessageBox.information(self, "Atualização", str(exc))
+            return
+        except Exception as exc:
+            progress_dialog.close()
+            QMessageBox.critical(
+                self,
+                "Atualização",
+                f"Falha ao baixar a nova versão.\n{exc}",
+            )
+            return
+        finally:
+            if progress_dialog.isVisible():
+                progress_dialog.close()
+
+        try:
+            self.update_manager.apply_update(downloaded_path)
+        except Exception as exc:
+            if os.path.exists(downloaded_path):
+                os.remove(downloaded_path)
+            QMessageBox.critical(
+                self,
+                "Atualização",
+                f"Não foi possível aplicar a atualização automaticamente.\n{exc}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Atualização",
+            "Atualização concluída com sucesso. O aplicativo será reiniciado.",
+        )
+        self.accept()
+        QApplication.instance().quit()
 
 class DaySelectionDialog(QDialog):
     def __init__(self, parent=None):
