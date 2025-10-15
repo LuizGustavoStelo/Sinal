@@ -2,11 +2,8 @@ import os
 import re
 import shutil
 import subprocess
+from importlib import import_module, util
 from pathlib import Path
-
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 
 
 DRIVE_FOLDER_ID = "1qUpWNd2fvUAQrq9ZumfvzaxzsuyRK12Y"
@@ -14,6 +11,29 @@ VERSION_FILE_NAME = "versao.txt"
 EXECUTABLE_NAME = "Sinal.exe"
 APP_FILE = "app_ui.py"
 DIST_DIR = Path("dist")
+
+_MEDIA_FILE_UPLOAD = None
+
+
+def _load_drive_modules():
+    required_modules = {
+        "google.oauth2.service_account": None,
+        "googleapiclient.discovery": None,
+        "googleapiclient.http": None,
+    }
+
+    missing = [name for name in required_modules if util.find_spec(name) is None]
+    if missing:
+        print("Dependências do Google Drive ausentes:")
+        for name in missing:
+            print(f" - {name}")
+        print("Envio automático para o Google Drive será ignorado.")
+        return None
+
+    for name in required_modules:
+        required_modules[name] = import_module(name)
+
+    return required_modules
 
 
 def get_credentials_path():
@@ -29,6 +49,15 @@ def get_credentials_path():
 
 
 def create_drive_service():
+    modules = _load_drive_modules()
+    if not modules:
+        return None
+
+    Credentials = modules["google.oauth2.service_account"].Credentials
+    build_service = modules["googleapiclient.discovery"].build
+    global _MEDIA_FILE_UPLOAD
+    _MEDIA_FILE_UPLOAD = modules["googleapiclient.http"].MediaFileUpload
+
     credentials_path = get_credentials_path()
     if not credentials_path:
         print(
@@ -40,7 +69,7 @@ def create_drive_service():
         credentials_path,
         scopes=["https://www.googleapis.com/auth/drive"],
     )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    return build_service("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def upload_file(service, file_path, file_name):
@@ -61,7 +90,10 @@ def upload_file(service, file_path, file_name):
         service.files().delete(fileId=file_data["id"]).execute()
 
     metadata = {"name": file_name, "parents": [DRIVE_FOLDER_ID]}
-    media = MediaFileUpload(file_path, resumable=True)
+    if _MEDIA_FILE_UPLOAD is None:
+        print("Upload não inicializado por falta do módulo MediaFileUpload.")
+        return
+    media = _MEDIA_FILE_UPLOAD(file_path, resumable=True)
     service.files().create(body=metadata, media_body=media, fields="id").execute()
 
 

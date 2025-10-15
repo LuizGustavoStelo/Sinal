@@ -3,6 +3,7 @@ import os
 import io
 import subprocess
 import tempfile
+from importlib import import_module, util
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -46,6 +47,23 @@ REMOTE_EXECUTABLE_NAME = "Sinal.exe"
 DEFAULT_CREDENTIALS_FILE = "service_account.json"
 
 
+def _resolve_google_modules():
+    required_modules = {
+        "google.oauth2.service_account": None,
+        "googleapiclient.discovery": None,
+        "googleapiclient.http": None,
+    }
+
+    missing = [name for name in required_modules if util.find_spec(name) is None]
+    if missing:
+        return None, missing
+
+    for name in required_modules:
+        required_modules[name] = import_module(name)
+
+    return required_modules, []
+
+
 def add_drop_shadow(widget, blur_radius=16, x_offset=0, y_offset=3, opacity=110):
     shadow = QGraphicsDropShadowEffect(widget)
     shadow.setBlurRadius(blur_radius)
@@ -58,6 +76,23 @@ class UpdateManager:
     def __init__(self, parent=None):
         self.parent = parent
         self._drive_service = None
+        modules, missing = _resolve_google_modules()
+        if missing:
+            self._availability_error = (
+                "Bibliotecas do Google Drive ausentes: "
+                + ", ".join(missing)
+                + ". Instale-as para habilitar as atualizações automáticas."
+            )
+            self._modules = None
+        else:
+            self._availability_error = None
+            self._modules = modules
+
+    def is_available(self):
+        return self._availability_error is None
+
+    def availability_error(self):
+        return self._availability_error
 
     def application_directory(self):
         if getattr(sys, "frozen", False):
@@ -80,13 +115,18 @@ class UpdateManager:
         )
 
     def _get_service(self):
+        if not self.is_available():
+            raise RuntimeError(self._availability_error)
         if self._drive_service is None:
             credentials_path = self._credentials_path()
-            creds = Credentials.from_service_account_file(
+            creds = self._modules["google.oauth2.service_account"].Credentials.from_service_account_file(
                 credentials_path,
                 scopes=["https://www.googleapis.com/auth/drive"],
             )
-            self._drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
+            build_service = self._modules["googleapiclient.discovery"].build
+            self._drive_service = build_service(
+                "drive", "v3", credentials=creds, cache_discovery=False
+            )
         return self._drive_service
 
     def _get_file_id(self, file_name):
@@ -111,7 +151,9 @@ class UpdateManager:
         file_id = self._get_file_id(VERSION_FILE_NAME)
         request = service.files().get_media(fileId=file_id)
         buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request)
+        downloader = self._modules["googleapiclient.http"].MediaIoBaseDownload(
+            buffer, request
+        )
         done = False
         while not done:
             _, done = downloader.next_chunk()
@@ -130,7 +172,9 @@ class UpdateManager:
 
         try:
             with open(temp_path, 'wb') as file_handle:
-                downloader = MediaIoBaseDownload(file_handle, request)
+                downloader = self._modules["googleapiclient.http"].MediaIoBaseDownload(
+                    file_handle, request
+                )
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
@@ -783,6 +827,9 @@ class InfoDialog(QDialog):
         self.update_button.setAutoRaise(True)
         self.update_button.setStyleSheet("background-color: transparent;")
         self.update_button.clicked.connect(self.check_for_updates)
+        if not self.update_manager.is_available():
+            self.update_button.setEnabled(False)
+            self.update_button.setToolTip(self.update_manager.availability_error())
         version_layout.addWidget(self.update_button)
 
         version_widget = QWidget(self)
@@ -808,6 +855,13 @@ class InfoDialog(QDialog):
         self.layout.addLayout(button_layout)
 
     def check_for_updates(self):
+        if not self.update_manager.is_available():
+            QMessageBox.information(
+                self,
+                "Atualizações",
+                self.update_manager.availability_error(),
+            )
+            return
         try:
             has_update, remote_version = self.update_manager.has_newer_version(APP_VERSION)
         except Exception as exc:
