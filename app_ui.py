@@ -1,6 +1,6 @@
 import sys
 import os
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QStyledItemDelegate, QVBoxLayout, QWidget, QTableWidget, QTableWidgetItem, QHeaderView, QHBoxLayout, QFileDialog, QInputDialog, QDialog, QDialogButtonBox, QCheckBox, QDesktopWidget, QTimeEdit, QLineEdit, QGraphicsDropShadowEffect
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QStyledItemDelegate, QVBoxLayout, QWidget, QTableWidget, QTableWidgetItem, QHeaderView, QHBoxLayout, QFileDialog, QInputDialog, QDialog, QDialogButtonBox, QCheckBox, QDesktopWidget, QTimeEdit, QLineEdit, QGraphicsDropShadowEffect, QFrame
 from PyQt5.QtCore import Qt, QTimer, QTime, QUrl, QDate, QDateTime
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
@@ -20,8 +20,18 @@ class EditDialog(QDialog):
         self.setWindowTitle("Editar Informação")
         self.setStyleSheet("background-color: white;")
         self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(24, 20, 24, 20)
+        self.layout.setSpacing(16)
+
+        label_font = QFont()
+        label_font.setPointSize(12)
+        label_font.setBold(True)
+
+        input_font = QFont()
+        input_font.setPointSize(12)
 
         self.label = QLabel("Nova Informação:", self)
+        self.label.setFont(label_font)
         self.layout.addWidget(self.label)
 
         if input_type == "time":
@@ -31,6 +41,7 @@ class EditDialog(QDialog):
         else:
             self.input_widget = QLineEdit(self)
 
+        self.input_widget.setFont(input_font)
         self.layout.addWidget(self.input_widget)
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
@@ -555,32 +566,57 @@ class InfoDialog(QDialog):
         self.setWindowTitle("Informações do App")
         self.setStyleSheet("background-color: white;")
         self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(24, 20, 24, 20)
+        self.layout.setSpacing(20)
 
-        fonte_info = QFont()
-        fonte_info.setPointSize(12)
+        title_font = QFont()
+        title_font.setPointSize(12)
+        title_font.setBold(True)
 
-        # Dicas
-        self.dicas_label = QLabel("<b>Dicas:</b><br><br>"
-                                  "- Ao clicar duas vezes sobre um item na tabela, você pode editá-lo<br><br>"
-                                  "- É uma boa prática manter a pasta com as músicas sempre junto com este programa, para evitar possíveis problemas<br><br>"
-                                  "- Use o botão 'Novo' para adicionar sinais aos dias<br><br>"
-                                  "- Selecione um item e clique em 'Play' para ouvir a música<br><br>"
-                                  "- O aplicativo toca músicas automaticamente no horário programado", self)
-        self.dicas_label.setWordWrap(True)
-        self.dicas_label.setFont(fonte_info)
-        self.layout.addWidget(self.dicas_label)
+        tips_font = QFont()
+        tips_font.setPointSize(11)
 
-        # Informações do botão "?"
-        self.info_label = QLabel("<p>Versão 1.2.21</p><p>Desenvolvido por Luiz Gustavo Stelo</p><p>ASM</p>", self)
+        info_font = QFont()
+        info_font.setPointSize(10)
+
+        tips_container = QFrame(self)
+        tips_container.setStyleSheet("QFrame { background-color: #f6f6f6; border: 1px solid #d4d4d4; border-radius: 8px; }")
+        tips_layout = QVBoxLayout(tips_container)
+        tips_layout.setContentsMargins(16, 16, 16, 16)
+        tips_layout.setSpacing(10)
+
+        tips_title = QLabel("Dicas:", tips_container)
+        tips_title.setFont(title_font)
+        tips_title.setStyleSheet("color: #1f1f1f;")
+        tips_layout.addWidget(tips_title)
+
+        tips_text = QLabel(
+            "<ul style='margin: 0; padding-left: 18px;'>"
+            "<li>Ao clicar duas vezes sobre um item na tabela, você pode editá-lo.</li>"
+            "<li>Mantenha a pasta com as músicas sempre junto com este programa para evitar problemas.</li>"
+            "<li>Use o botão 'Novo' para adicionar sinais aos dias.</li>"
+            "<li>Selecione um item e clique em 'Play' para ouvir a música.</li>"
+            "<li>O aplicativo toca músicas automaticamente no horário programado.</li>"
+            "</ul>",
+            tips_container,
+        )
+        tips_text.setFont(tips_font)
+        tips_text.setWordWrap(True)
+        tips_text.setStyleSheet("color: #333333;")
+        tips_layout.addWidget(tips_text)
+
+        self.layout.addWidget(tips_container)
+
+        self.info_label = QLabel("Versão 1.2.21<br>Desenvolvido por Luiz Gustavo Stelo<br>ASM", self)
         self.info_label.setAlignment(Qt.AlignCenter)
-        self.info_label.setFont(fonte_info)
+        self.info_label.setFont(info_font)
+        self.info_label.setStyleSheet("color: #333333;")
         self.layout.addWidget(self.info_label)
 
-        # Botão OK centralizado
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         self.ok_button = QPushButton("OK", self)
-        self.ok_button.setFont(fonte_info)
+        self.ok_button.setFont(tips_font)
         self.ok_button.setFixedSize(90, 40)
         self.ok_button.setStyleSheet("background-color: white; color: black; border-radius: 5px; border: 1px solid black;")
         add_drop_shadow(self.ok_button)
