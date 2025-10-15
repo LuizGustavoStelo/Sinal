@@ -22,7 +22,14 @@ def _load_drive_modules():
         "googleapiclient.http": None,
     }
 
-    missing = [name for name in required_modules if util.find_spec(name) is None]
+    missing = []
+    for name in required_modules:
+        try:
+            spec = util.find_spec(name)
+        except ModuleNotFoundError:
+            spec = None
+        if spec is None:
+            missing.append(name)
     if missing:
         print("Dependências do Google Drive ausentes:")
         for name in missing:
