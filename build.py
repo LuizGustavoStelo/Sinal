@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from importlib import import_module, util
 from pathlib import Path
 
@@ -15,6 +16,45 @@ DIST_DIR = Path("dist")
 _MEDIA_FILE_UPLOAD = None
 
 
+_MODULE_TO_PACKAGE = {
+    "google.oauth2.service_account": "google-auth",
+    "googleapiclient.discovery": "google-api-python-client",
+    "googleapiclient.http": "google-api-python-client",
+}
+
+
+def _find_missing_modules(modules):
+    missing = []
+    for name in modules:
+        try:
+            spec = util.find_spec(name)
+        except ModuleNotFoundError:
+            spec = None
+        if spec is None:
+            missing.append(name)
+    return missing
+
+
+def _attempt_install_missing(packages):
+    if not packages:
+        return False
+
+    print("Dependências do Google Drive ausentes. Tentando instalar automaticamente:")
+    for package in sorted(packages):
+        print(f" - {package}")
+
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", *sorted(packages)]
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        print(
+            "Não foi possível instalar automaticamente as dependências do Google Drive."
+        )
+        return False
+
+    print("Dependências do Google Drive instaladas com sucesso.")
+    return True
+
+
 def _load_drive_modules():
     required_modules = {
         "google.oauth2.service_account": None,
@@ -22,16 +62,19 @@ def _load_drive_modules():
         "googleapiclient.http": None,
     }
 
-    missing = []
-    for name in required_modules:
-        try:
-            spec = util.find_spec(name)
-        except ModuleNotFoundError:
-            spec = None
-        if spec is None:
-            missing.append(name)
+    missing = _find_missing_modules(required_modules)
     if missing:
-        print("Dependências do Google Drive ausentes:")
+        packages = {
+            _MODULE_TO_PACKAGE[name]
+            for name in missing
+            if name in _MODULE_TO_PACKAGE
+        }
+        installed = _attempt_install_missing(packages)
+        if installed:
+            missing = _find_missing_modules(required_modules)
+
+    if missing:
+        print("As dependências do Google Drive continuam ausentes:")
         for name in missing:
             print(f" - {name}")
         print("Envio automático para o Google Drive será ignorado.")
