@@ -86,6 +86,35 @@ def _load_drive_modules():
     return required_modules
 
 
+def _prompt_for_credentials():
+    print(
+        "Arquivo de credenciais do Google Drive não encontrado."\
+        "\nCole o caminho completo do JSON da conta de serviço ou pressione Enter para"\
+        " continuar sem enviar para o Drive."
+    )
+    user_input = input("Caminho do arquivo de credenciais: ").strip()
+    if not user_input:
+        return None
+
+    candidate = Path(user_input.strip('"'))
+    candidate = candidate.expanduser().resolve(strict=False)
+    if not candidate.exists():
+        print(
+            "O caminho informado não existe. Envio automático será ignorado nesta compilação."
+        )
+        return None
+
+    target = Path("service_account.json")
+    try:
+        shutil.copy2(candidate, target)
+        print(f"Credenciais copiadas para {target.resolve()}")
+    except OSError as exc:
+        print(f"Não foi possível copiar o arquivo de credenciais: {exc}")
+        return None
+
+    return str(target.resolve())
+
+
 def get_credentials_path():
     env_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if env_path and os.path.exists(env_path):
@@ -93,9 +122,9 @@ def get_credentials_path():
 
     default_path = Path("service_account.json")
     if default_path.exists():
-        return str(default_path)
+        return str(default_path.resolve())
 
-    return None
+    return _prompt_for_credentials()
 
 
 def create_drive_service():
