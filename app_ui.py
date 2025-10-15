@@ -137,7 +137,8 @@ class MusicAppUI(QMainWindow):
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout()
         self.central_widget.setLayout(self.layout)
-        self.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #003b71, stop:0.2 #004080, stop:0.4 #005090, stop:0.6 #0060a0, stop:0.8 #f1c50e, stop:1 #f1c50e);")
+        self.setStyleSheet("")
+        self.central_widget.setStyleSheet("background-color: #003b71;")
 
         self.relogio_label = QLabel()
         fonte_relogio = QFont()
@@ -155,8 +156,8 @@ class MusicAppUI(QMainWindow):
         self.status_label.setStyleSheet("color: white; background-color: transparent;")
         self.layout.addWidget(self.status_label)
 
-        self.buttons_layout = QHBoxLayout()
-        self.layout.addLayout(self.buttons_layout)
+        self.day_buttons_layout = QHBoxLayout()
+        self.layout.addLayout(self.day_buttons_layout)
 
         self.buttons = {}
         fonte_dias = QFont()
@@ -169,15 +170,20 @@ class MusicAppUI(QMainWindow):
             button.setFont(fonte_dias)
             button.setStyleSheet("QPushButton { background-color: white; color: black; border-radius: 5px; border: 1px solid black; box-shadow: 2px 2px 5px rgba(0,0,0,0.3); } QPushButton:checked { background-color: #f1c50e; }")
             button.clicked.connect(self.on_day_button_clicked)
-            self.buttons_layout.addWidget(button)
+            self.day_buttons_layout.addWidget(button)
             self.buttons[day.lower()] = button
 
         self.setup_table_widget()  
 
         self.layout.addWidget(self.table_widget)
 
-        self.buttons_layout = QHBoxLayout()
-        self.layout.addLayout(self.buttons_layout)
+        self.bottom_widget = QWidget()
+        self.bottom_widget.setStyleSheet("background-color: #f1c50e;")
+        self.bottom_layout = QHBoxLayout()
+        self.bottom_layout.setContentsMargins(10, 10, 10, 10)
+        self.bottom_layout.setSpacing(10)
+        self.bottom_widget.setLayout(self.bottom_layout)
+        self.layout.addWidget(self.bottom_widget)
 
         self.novo_button = QPushButton("Novo")
         self.novo_button.setFixedSize(90, 40)
@@ -187,7 +193,7 @@ class MusicAppUI(QMainWindow):
         self.novo_button.setStyleSheet("background-color: white; color: black; border-radius: 5px; border: 1px solid black; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);")
         self.novo_button.setToolTip("Criar novo sinal")
         self.novo_button.clicked.connect(self.adicionar_nova_musica)
-        self.buttons_layout.addWidget(self.novo_button)
+        self.bottom_layout.addWidget(self.novo_button)
 
         self.play_button = QPushButton("Play")
         self.play_button.setFixedSize(90, 40)
@@ -197,7 +203,7 @@ class MusicAppUI(QMainWindow):
         self.play_button.setStyleSheet("background-color: white; color: black; border-radius: 5px; border: 1px solid black; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);")
         self.play_button.setToolTip("Toca a musica selecionada")
         self.play_button.clicked.connect(self.play_selected_music)
-        self.buttons_layout.addWidget(self.play_button)
+        self.bottom_layout.addWidget(self.play_button)
 
         self.stop_button = QPushButton("Parar")
         self.stop_button.setFixedSize(90, 40)
@@ -207,7 +213,7 @@ class MusicAppUI(QMainWindow):
         self.stop_button.setStyleSheet("background-color: white; color: black; border-radius: 5px; border: 1px solid black; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);")
         self.stop_button.setToolTip("Para de tocar imediatamente")
         self.stop_button.clicked.connect(self.stop_playing_music)
-        self.buttons_layout.addWidget(self.stop_button)
+        self.bottom_layout.addWidget(self.stop_button)
 
         self.deletar_button = QPushButton("Deletar")
         self.deletar_button.setFixedSize(90, 40)
@@ -217,7 +223,7 @@ class MusicAppUI(QMainWindow):
         self.deletar_button.setStyleSheet("background-color: white; color: black; border-radius: 5px; border: 1px solid black; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);")
         self.deletar_button.setToolTip("Deleta as musicas selecionadas")
         self.deletar_button.clicked.connect(self.deletar_musicas_selecionadas)
-        self.buttons_layout.addWidget(self.deletar_button)
+        self.bottom_layout.addWidget(self.deletar_button)
         
         self.info_button = QPushButton("?")
         self.info_button.setFixedSize(40, 40)
@@ -227,7 +233,7 @@ class MusicAppUI(QMainWindow):
         self.info_button.setStyleSheet("background-color: white; color: black; border-radius: 5px; border: 1px solid black; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);")
         self.info_button.setToolTip("Informações")
         self.info_button.clicked.connect(self.show_info_dialog)
-        self.buttons_layout.addWidget(self.info_button)
+        self.bottom_layout.addWidget(self.info_button)
 
         self.atualizar_relogio()  
 
