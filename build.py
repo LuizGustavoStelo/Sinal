@@ -1,5 +1,108 @@
+import os
 import re
+import shutil
 import subprocess
+from importlib import import_module, util
+from pathlib import Path
+
+
+DRIVE_FOLDER_ID = "1qUpWNd2fvUAQrq9ZumfvzaxzsuyRK12Y"
+VERSION_FILE_NAME = "versao.txt"
+EXECUTABLE_NAME = "Sinal.exe"
+APP_FILE = "app_ui.py"
+DIST_DIR = Path("dist")
+
+_MEDIA_FILE_UPLOAD = None
+
+
+def _load_drive_modules():
+    required_modules = {
+        "google.oauth2.service_account": None,
+        "googleapiclient.discovery": None,
+        "googleapiclient.http": None,
+    }
+
+    missing = []
+    for name in required_modules:
+        try:
+            spec = util.find_spec(name)
+        except ModuleNotFoundError:
+            spec = None
+        if spec is None:
+            missing.append(name)
+    if missing:
+        print("Dependências do Google Drive ausentes:")
+        for name in missing:
+            print(f" - {name}")
+        print("Envio automático para o Google Drive será ignorado.")
+        return None
+
+    for name in required_modules:
+        required_modules[name] = import_module(name)
+
+    return required_modules
+
+
+def get_credentials_path():
+    env_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    default_path = Path("service_account.json")
+    if default_path.exists():
+        return str(default_path)
+
+    return None
+
+
+def create_drive_service():
+    modules = _load_drive_modules()
+    if not modules:
+        return None
+
+    Credentials = modules["google.oauth2.service_account"].Credentials
+    build_service = modules["googleapiclient.discovery"].build
+    global _MEDIA_FILE_UPLOAD
+    _MEDIA_FILE_UPLOAD = modules["googleapiclient.http"].MediaFileUpload
+
+    credentials_path = get_credentials_path()
+    if not credentials_path:
+        print(
+            "Credenciais do Google Drive não encontradas. Pule o envio automático."
+        )
+        return None
+
+    creds = Credentials.from_service_account_file(
+        credentials_path,
+        scopes=["https://www.googleapis.com/auth/drive"],
+    )
+    return build_service("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def upload_file(service, file_path, file_name):
+    if not service:
+        return
+
+    query = (
+        f"'{DRIVE_FOLDER_ID}' in parents and name='{file_name}' and trashed=false"
+    )
+    existing_files = (
+        service.files()
+        .list(q=query, spaces="drive", fields="files(id)", pageSize=10)
+        .execute()
+        .get("files", [])
+    )
+
+    for file_data in existing_files:
+        service.files().delete(fileId=file_data["id"]).execute()
+
+    metadata = {"name": file_name, "parents": [DRIVE_FOLDER_ID]}
+    if _MEDIA_FILE_UPLOAD is None:
+        print("Upload não inicializado por falta do módulo MediaFileUpload.")
+        return
+    media = _MEDIA_FILE_UPLOAD(file_path, resumable=True)
+    service.files().create(body=metadata, media_body=media, fields="id").execute()
+
 
 def increment_version(version_str):
     # Assume formato x.y.z
@@ -9,24 +112,51 @@ def increment_version(version_str):
         return '.'.join(parts)
     return version_str
 
+
 def update_version_in_file(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Encontra a linha com "Versão x.y.z"
-    pattern = r'Versão (\d+\.\d+\.\d+)'
+    # Encontra a constante APP_VERSION = "x.y.z"
+    pattern = r'APP_VERSION\s*=\s*"(\d+\.\d+\.\d+)"'
     match = re.search(pattern, content)
     if match:
         old_version = match.group(1)
         new_version = increment_version(old_version)
-        new_content = content.replace(f'Versão {old_version}', f'Versão {new_version}')
+        new_content = content.replace(
+            f'APP_VERSION = "{old_version}"', f'APP_VERSION = "{new_version}"'
+        )
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
         print(f'Versão atualizada de {old_version} para {new_version}')
+        return new_version
     else:
         print('Versão não encontrada no arquivo.')
+        return None
+
 
 if __name__ == '__main__':
-    update_version_in_file('app_ui.py')
+    new_version = update_version_in_file(APP_FILE)
     # Agora compila
-    subprocess.run(['pyinstaller', '--onefile', '--noconsole', '--icon=assets/icon.ico', 'app_ui.py'])
+    subprocess.run(
+        ['pyinstaller', '--onefile', '--noconsole', '--icon=assets/icon.ico', APP_FILE],
+        check=True,
+    )
+
+    source_executable = DIST_DIR / 'app_ui.exe'
+    if source_executable.exists():
+        target_executable = DIST_DIR / EXECUTABLE_NAME
+        shutil.copy2(source_executable, target_executable)
+        print(f'Executável copiado para {target_executable}')
+
+        if new_version:
+            version_file = DIST_DIR / VERSION_FILE_NAME
+            version_file.write_text(new_version, encoding='utf-8')
+            print(f'Arquivo de versão atualizado em {version_file}')
+
+        drive_service = create_drive_service()
+        upload_file(drive_service, str(target_executable), EXECUTABLE_NAME)
+        if new_version:
+            upload_file(drive_service, str(version_file), VERSION_FILE_NAME)
+    else:
+        print('Executável gerado não encontrado. Certifique-se de que o PyInstaller concluiu a compilação com sucesso.')
