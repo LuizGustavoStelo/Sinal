@@ -1,9 +1,10 @@
 import sys
 import os
-import io
+import json
 import subprocess
 import tempfile
-from importlib import import_module, util
+import urllib.error
+import urllib.request
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -41,29 +42,13 @@ import sqlite3
 
 
 APP_VERSION = "1.2.22"
-DRIVE_FOLDER_ID = "1qUpWNd2fvUAQrq9ZumfvzaxzsuyRK12Y"
 VERSION_FILE_NAME = "versao.txt"
 REMOTE_EXECUTABLE_NAME = "Sinal.exe"
-DEFAULT_CREDENTIALS_FILE = "service_account.json"
-
-
-def _resolve_google_modules():
-    required_modules = {
-        "google.oauth2.service_account": None,
-        "googleapiclient.discovery": None,
-        "googleapiclient.http": None,
-    }
-
-    missing = [name for name in required_modules if util.find_spec(name) is None]
-    if missing:
-        return None, missing
-
-    for name in required_modules:
-        required_modules[name] = import_module(name)
-
-    return required_modules, []
-
-
+UPDATE_CONFIG_FILE = "update_config.json"
+DEFAULT_GITHUB_OWNER = ""
+DEFAULT_GITHUB_REPO = ""
+GITHUB_API_BASE_URL = "https://api.github.com"
+DOWNLOAD_USER_AGENT = "Sinal-Updater"
 def add_drop_shadow(widget, blur_radius=16, x_offset=0, y_offset=3, opacity=110):
     shadow = QGraphicsDropShadowEffect(widget)
     shadow.setBlurRadius(blur_radius)
@@ -75,18 +60,14 @@ def add_drop_shadow(widget, blur_radius=16, x_offset=0, y_offset=3, opacity=110)
 class UpdateManager:
     def __init__(self, parent=None):
         self.parent = parent
-        self._drive_service = None
-        modules, missing = _resolve_google_modules()
-        if missing:
-            self._availability_error = (
-                "Bibliotecas do Google Drive ausentes: "
-                + ", ".join(missing)
-                + ". Instale-as para habilitar as atualizações automáticas."
-            )
-            self._modules = None
-        else:
+        self.repo_owner = None
+        self.repo_name = None
+        self._latest_release = None
+        try:
+            self._load_repository_info()
             self._availability_error = None
-            self._modules = modules
+        except Exception as exc:
+            self._availability_error = str(exc)
 
     def is_available(self):
         return self._availability_error is None
@@ -99,89 +80,162 @@ class UpdateManager:
             return os.path.dirname(sys.executable)
         return os.path.dirname(os.path.abspath(__file__))
 
-    def _credentials_path(self):
-        env_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        if env_path and os.path.exists(env_path):
-            return env_path
+    def _config_file_path(self):
+        return os.path.join(self.application_directory(), UPDATE_CONFIG_FILE)
 
-        default_path = os.path.join(self.application_directory(), DEFAULT_CREDENTIALS_FILE)
-        if os.path.exists(default_path):
-            return default_path
+    def _load_repository_info(self):
+        owner = None
+        repo = None
 
-        raise FileNotFoundError(
-            "Arquivo de credenciais do Google Drive não encontrado. Configure a variável"
-            " de ambiente GOOGLE_APPLICATION_CREDENTIALS ou coloque o arquivo"
-            f" {DEFAULT_CREDENTIALS_FILE} na pasta do aplicativo."
+        repository_slug = (
+            os.environ.get("SINAL_GITHUB_REPOSITORY")
+            or os.environ.get("GITHUB_REPOSITORY")
         )
+        if repository_slug and "/" in repository_slug:
+            owner, repo = [part.strip() for part in repository_slug.split("/", 1)]
 
-    def _get_service(self):
+        if not owner or not repo:
+            env_owner = os.environ.get("SINAL_GITHUB_OWNER") or os.environ.get("GITHUB_OWNER")
+            env_repo = os.environ.get("SINAL_GITHUB_REPO") or os.environ.get("GITHUB_REPO")
+            if env_owner and env_repo:
+                owner, repo = env_owner, env_repo
+
+        if not owner or not repo:
+            config_path = self._config_file_path()
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, "r", encoding="utf-8") as config_file:
+                        data = json.load(config_file)
+                    owner = data.get("owner", owner)
+                    repo = data.get("repo", repo)
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+        if not owner or not repo:
+            if DEFAULT_GITHUB_OWNER and DEFAULT_GITHUB_REPO:
+                owner, repo = DEFAULT_GITHUB_OWNER, DEFAULT_GITHUB_REPO
+
+        if not owner or not repo:
+            raise RuntimeError(
+                "Repositório do GitHub não configurado. Configure o build para publicar as releases e gerar os metadados de atualização."
+            )
+
+        self.repo_owner = owner
+        self.repo_name = repo
+
+    def _github_request(self, path):
         if not self.is_available():
             raise RuntimeError(self._availability_error)
-        if self._drive_service is None:
-            credentials_path = self._credentials_path()
-            creds = self._modules["google.oauth2.service_account"].Credentials.from_service_account_file(
-                credentials_path,
-                scopes=["https://www.googleapis.com/auth/drive"],
-            )
-            build_service = self._modules["googleapiclient.discovery"].build
-            self._drive_service = build_service(
-                "drive", "v3", credentials=creds, cache_discovery=False
-            )
-        return self._drive_service
 
-    def _get_file_id(self, file_name):
-        service = self._get_service()
-        query = f"'{DRIVE_FOLDER_ID}' in parents and name='{file_name}' and trashed=false"
-        result = (
-            service.files()
-            .list(q=query, spaces="drive", fields="files(id, name)", pageSize=1)
-            .execute()
-        )
-        files = result.get("files", [])
-        if not files:
-            raise FileNotFoundError(f"Arquivo '{file_name}' não encontrado na pasta compartilhada.")
-        return files[0]["id"]
+        url = f"{GITHUB_API_BASE_URL}{path}"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": DOWNLOAD_USER_AGENT,
+        }
+
+        request = urllib.request.Request(url, headers=headers, method="GET")
+
+        try:
+            with urllib.request.urlopen(request) as response:
+                payload = response.read()
+                if response.headers.get("Content-Type", "").startswith("application/json"):
+                    return json.loads(payload.decode("utf-8"))
+                return payload
+        except urllib.error.HTTPError as exc:
+            message = exc.reason
+            try:
+                details = exc.read()
+                if details:
+                    body = json.loads(details.decode("utf-8"))
+                    message = body.get("message", message)
+            except Exception:
+                pass
+            raise RuntimeError(f"Erro ao acessar o GitHub: {message}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Não foi possível conectar ao GitHub: {exc}") from exc
+
+    def _latest_release(self):
+        if self._latest_release is None:
+            path = f"/repos/{self.repo_owner}/{self.repo_name}/releases/latest"
+            self._latest_release = self._github_request(path)
+        return self._latest_release
 
     @staticmethod
     def _version_tuple(version):
         return tuple(int(part) for part in version.strip().split('.'))
 
+    def _find_asset(self, name):
+        release = self._latest_release()
+        for asset in release.get("assets", []):
+            if asset.get("name") == name:
+                return asset
+        return None
+
+    def _download_url(self, url):
+        headers = {"User-Agent": DOWNLOAD_USER_AGENT}
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.read(), response.headers
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"Falha ao baixar '{url}': {exc.reason}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Não foi possível conectar para baixar o arquivo: {exc}") from exc
+
     def fetch_remote_version(self):
-        service = self._get_service()
-        file_id = self._get_file_id(VERSION_FILE_NAME)
-        request = service.files().get_media(fileId=file_id)
-        buffer = io.BytesIO()
-        downloader = self._modules["googleapiclient.http"].MediaIoBaseDownload(
-            buffer, request
-        )
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        return buffer.getvalue().decode('utf-8').strip()
+        asset = self._find_asset(VERSION_FILE_NAME)
+        if asset:
+            content, _ = self._download_url(asset.get("browser_download_url"))
+            return content.decode("utf-8").strip()
+
+        release = self._latest_release()
+        tag = release.get("tag_name", "")
+        if tag.lower().startswith("v"):
+            tag = tag[1:]
+        if tag:
+            return tag
+        raise RuntimeError("A release não possui o arquivo de versão nem uma tag válida.")
 
     def has_newer_version(self, current_version):
         remote_version = self.fetch_remote_version()
         return self._version_tuple(remote_version) > self._version_tuple(current_version), remote_version
 
     def download_update(self, progress_callback=None, cancel_callback=None):
-        service = self._get_service()
-        file_id = self._get_file_id(REMOTE_EXECUTABLE_NAME)
-        request = service.files().get_media(fileId=file_id)
+        asset = self._find_asset(REMOTE_EXECUTABLE_NAME)
+        if not asset:
+            raise FileNotFoundError(
+                f"Asset '{REMOTE_EXECUTABLE_NAME}' não encontrado na última release do GitHub."
+            )
+
         fd, temp_path = tempfile.mkstemp(suffix=".exe")
         os.close(fd)
 
         try:
-            with open(temp_path, 'wb') as file_handle:
-                downloader = self._modules["googleapiclient.http"].MediaIoBaseDownload(
-                    file_handle, request
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    asset.get("browser_download_url"),
+                    headers={"User-Agent": DOWNLOAD_USER_AGENT},
+                    method="GET",
                 )
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
-                    if status and progress_callback:
-                        progress_callback(int(status.progress() * 100))
+            ) as response, open(temp_path, 'wb') as file_handle:
+                total_size = response.headers.get("Content-Length")
+                total_size = int(total_size) if total_size else None
+                downloaded = 0
+                chunk_size = 64 * 1024
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    file_handle.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback and total_size:
+                        progress_callback(int(downloaded * 100 / total_size))
+                    elif progress_callback:
+                        progress_callback(0)
                     if cancel_callback and cancel_callback():
                         raise RuntimeError("Atualização cancelada pelo usuário.")
+                if progress_callback:
+                    progress_callback(100)
             return temp_path
         except Exception:
             if os.path.exists(temp_path):

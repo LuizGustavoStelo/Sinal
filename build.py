@@ -1,182 +1,29 @@
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-from importlib import import_module, util
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from getpass import getpass
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 
-DRIVE_FOLDER_ID = "1qUpWNd2fvUAQrq9ZumfvzaxzsuyRK12Y"
-VERSION_FILE_NAME = "versao.txt"
-EXECUTABLE_NAME = "Sinal.exe"
 APP_FILE = "app_ui.py"
 DIST_DIR = Path("dist")
-
-_MEDIA_FILE_UPLOAD = None
-
-
-_MODULE_TO_PACKAGE = {
-    "google.oauth2.service_account": "google-auth",
-    "googleapiclient.discovery": "google-api-python-client",
-    "googleapiclient.http": "google-api-python-client",
-}
+EXECUTABLE_NAME = "Sinal.exe"
+SOURCE_EXECUTABLE_NAME = "app_ui.exe"
+VERSION_FILE_NAME = "versao.txt"
+RELEASE_CONFIG_PATH = Path(".github_release_config.json")
+UPDATE_CONFIG_NAME = "update_config.json"
+USER_AGENT = "Sinal-Build-Script"
 
 
-def _find_missing_modules(modules):
-    missing = []
-    for name in modules:
-        try:
-            spec = util.find_spec(name)
-        except ModuleNotFoundError:
-            spec = None
-        if spec is None:
-            missing.append(name)
-    return missing
-
-
-def _attempt_install_missing(packages):
-    if not packages:
-        return False
-
-    print("Dependências do Google Drive ausentes. Tentando instalar automaticamente:")
-    for package in sorted(packages):
-        print(f" - {package}")
-
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", *sorted(packages)]
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        print(
-            "Não foi possível instalar automaticamente as dependências do Google Drive."
-        )
-        return False
-
-    print("Dependências do Google Drive instaladas com sucesso.")
-    return True
-
-
-def _load_drive_modules():
-    required_modules = {
-        "google.oauth2.service_account": None,
-        "googleapiclient.discovery": None,
-        "googleapiclient.http": None,
-    }
-
-    missing = _find_missing_modules(required_modules)
-    if missing:
-        packages = {
-            _MODULE_TO_PACKAGE[name]
-            for name in missing
-            if name in _MODULE_TO_PACKAGE
-        }
-        installed = _attempt_install_missing(packages)
-        if installed:
-            missing = _find_missing_modules(required_modules)
-
-    if missing:
-        print("As dependências do Google Drive continuam ausentes:")
-        for name in missing:
-            print(f" - {name}")
-        print("Envio automático para o Google Drive será ignorado.")
-        return None
-
-    for name in required_modules:
-        required_modules[name] = import_module(name)
-
-    return required_modules
-
-
-def _prompt_for_credentials():
-    print(
-        "Arquivo de credenciais do Google Drive não encontrado."\
-        "\nCole o caminho completo do JSON da conta de serviço ou pressione Enter para"\
-        " continuar sem enviar para o Drive."
-    )
-    user_input = input("Caminho do arquivo de credenciais: ").strip()
-    if not user_input:
-        return None
-
-    candidate = Path(user_input.strip('"'))
-    candidate = candidate.expanduser().resolve(strict=False)
-    if not candidate.exists():
-        print(
-            "O caminho informado não existe. Envio automático será ignorado nesta compilação."
-        )
-        return None
-
-    target = Path("service_account.json")
-    try:
-        shutil.copy2(candidate, target)
-        print(f"Credenciais copiadas para {target.resolve()}")
-    except OSError as exc:
-        print(f"Não foi possível copiar o arquivo de credenciais: {exc}")
-        return None
-
-    return str(target.resolve())
-
-
-def get_credentials_path():
-    env_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if env_path and os.path.exists(env_path):
-        return env_path
-
-    default_path = Path("service_account.json")
-    if default_path.exists():
-        return str(default_path.resolve())
-
-    return _prompt_for_credentials()
-
-
-def create_drive_service():
-    modules = _load_drive_modules()
-    if not modules:
-        return None
-
-    Credentials = modules["google.oauth2.service_account"].Credentials
-    build_service = modules["googleapiclient.discovery"].build
-    global _MEDIA_FILE_UPLOAD
-    _MEDIA_FILE_UPLOAD = modules["googleapiclient.http"].MediaFileUpload
-
-    credentials_path = get_credentials_path()
-    if not credentials_path:
-        print(
-            "Credenciais do Google Drive não encontradas. Pule o envio automático."
-        )
-        return None
-
-    creds = Credentials.from_service_account_file(
-        credentials_path,
-        scopes=["https://www.googleapis.com/auth/drive"],
-    )
-    return build_service("drive", "v3", credentials=creds, cache_discovery=False)
-
-
-def upload_file(service, file_path, file_name):
-    if not service:
-        return
-
-    query = (
-        f"'{DRIVE_FOLDER_ID}' in parents and name='{file_name}' and trashed=false"
-    )
-    existing_files = (
-        service.files()
-        .list(q=query, spaces="drive", fields="files(id)", pageSize=10)
-        .execute()
-        .get("files", [])
-    )
-
-    for file_data in existing_files:
-        service.files().delete(fileId=file_data["id"]).execute()
-
-    metadata = {"name": file_name, "parents": [DRIVE_FOLDER_ID]}
-    if _MEDIA_FILE_UPLOAD is None:
-        print("Upload não inicializado por falta do módulo MediaFileUpload.")
-        return
-    media = _MEDIA_FILE_UPLOAD(file_path, resumable=True)
-    service.files().create(body=metadata, media_body=media, fields="id").execute()
-
-
-def increment_version(version_str):
+def increment_version(version_str: str) -> str:
     # Assume formato x.y.z
     parts = version_str.split('.')
     if len(parts) == 3:
@@ -185,50 +32,402 @@ def increment_version(version_str):
     return version_str
 
 
-def update_version_in_file(file_path):
-    with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+def update_version_in_file(file_path: str) -> Optional[str]:
+    with open(file_path, "r", encoding="utf-8") as file_handle:
+        content = file_handle.read()
 
-    # Encontra a constante APP_VERSION = "x.y.z"
     pattern = r'APP_VERSION\s*=\s*"(\d+\.\d+\.\d+)"'
     match = re.search(pattern, content)
-    if match:
-        old_version = match.group(1)
-        new_version = increment_version(old_version)
-        new_content = content.replace(
-            f'APP_VERSION = "{old_version}"', f'APP_VERSION = "{new_version}"'
-        )
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(new_content)
-        print(f'Versão atualizada de {old_version} para {new_version}')
-        return new_version
-    else:
-        print('Versão não encontrada no arquivo.')
+    if not match:
+        print("Versão não encontrada no arquivo de aplicação.")
         return None
 
+    old_version = match.group(1)
+    new_version = increment_version(old_version)
+    new_content = content.replace(
+        f'APP_VERSION = "{old_version}"', f'APP_VERSION = "{new_version}"'
+    )
 
-if __name__ == '__main__':
+    with open(file_path, "w", encoding="utf-8") as file_handle:
+        file_handle.write(new_content)
+
+    print(f"Versão atualizada de {old_version} para {new_version}")
+    return new_version
+
+
+def _parse_repo_slug(slug: str) -> Tuple[str, str]:
+    parts = [part.strip() for part in slug.split("/") if part.strip()]
+    if len(parts) != 2:
+        raise ValueError("Informe o repositório no formato dono/repositorio.")
+    return parts[0], parts[1]
+
+
+def _load_config_from_env() -> Optional[dict]:
+    token = (
+        os.environ.get("SINAL_GITHUB_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+    )
+    repository = (
+        os.environ.get("SINAL_GITHUB_REPOSITORY")
+        or os.environ.get("GITHUB_REPOSITORY")
+    )
+    owner = (
+        os.environ.get("SINAL_GITHUB_OWNER")
+        or os.environ.get("GITHUB_OWNER")
+    )
+    repo_name = (
+        os.environ.get("SINAL_GITHUB_REPO")
+        or os.environ.get("GITHUB_REPO")
+    )
+
+    try:
+        if repository:
+            owner, repo_name = _parse_repo_slug(repository)
+        elif owner and repo_name:
+            owner, repo_name = owner, repo_name
+        else:
+            return None
+    except ValueError:
+        return None
+
+    if not token:
+        return {"owner": owner, "repo": repo_name}
+
+    return {"owner": owner, "repo": repo_name, "token": token}
+
+
+def _load_config_from_file() -> Optional[dict]:
+    if not RELEASE_CONFIG_PATH.exists():
+        return None
+
+    try:
+        with open(RELEASE_CONFIG_PATH, "r", encoding="utf-8") as file_handle:
+            data = json.load(file_handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Não foi possível ler {RELEASE_CONFIG_PATH}: {exc}")
+        return None
+
+    owner = data.get("owner")
+    repo = data.get("repo")
+    token = data.get("token")
+    if not owner or not repo:
+        print("Configuração do GitHub Releases incompleta no arquivo salvo.")
+        return None
+
+    config = {"owner": owner, "repo": repo}
+    if token:
+        config["token"] = token
+    return config
+
+
+def _prompt_for_config() -> Optional[dict]:
+    if not sys.stdin.isatty():
+        print("Configuração do GitHub não encontrada e entrada não interativa. Pulando upload.")
+        return None
+
+    print("Configuração do GitHub Releases não encontrada.")
+    repo_slug = input(
+        "Informe o repositório de destino (formato dono/repositorio) ou pressione Enter para ignorar o upload: "
+    ).strip()
+
+    if not repo_slug:
+        print("Upload para o GitHub Releases será ignorado nesta compilação.")
+        return None
+
+    try:
+        owner, repo = _parse_repo_slug(repo_slug)
+    except ValueError as exc:
+        print(exc)
+        return None
+
+    token = getpass(
+        "Informe um token pessoal do GitHub com permissão de repo (o texto não será exibido). Pressione Enter para cancelar: "
+    ).strip()
+
+    if not token:
+        print("Token não informado. Upload para o GitHub Releases será ignorado.")
+        return None
+
+    config = {"owner": owner, "repo": repo, "token": token}
+    try:
+        with open(RELEASE_CONFIG_PATH, "w", encoding="utf-8") as file_handle:
+            json.dump(config, file_handle, indent=2)
+        print(f"Configuração salva em {RELEASE_CONFIG_PATH.resolve()}.")
+    except OSError as exc:
+        print(f"Não foi possível salvar a configuração localmente: {exc}")
+
+    return config
+
+
+def load_release_config() -> Optional[dict]:
+    env_config = _load_config_from_env()
+    if env_config and env_config.get("token"):
+        return env_config
+
+    file_config = _load_config_from_file()
+    if file_config and file_config.get("token"):
+        return file_config
+
+    prompt_config = _prompt_for_config()
+    if prompt_config and prompt_config.get("token"):
+        return prompt_config
+
+    if env_config:
+        return env_config
+    if file_config:
+        return file_config
+    return None
+
+
+def resolve_repository_coordinates(config: Optional[dict]) -> Tuple[Optional[str], Optional[str]]:
+    if config and config.get("owner") and config.get("repo"):
+        return config["owner"], config["repo"]
+
+    fallback = _load_config_from_env() or _load_config_from_file()
+    if fallback and fallback.get("owner") and fallback.get("repo"):
+        return fallback["owner"], fallback["repo"]
+
+    return None, None
+
+
+class GithubReleasePublisher:
+    def __init__(self, owner: str, repo: str, token: str):
+        self.owner = owner
+        self.repo = repo
+        self.token = token
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        data: Optional[bytes] = None,
+        base: str = "https://api.github.com",
+        content_type: Optional[str] = "application/json",
+    ) -> Tuple[int, object]:
+        url = f"{base}{path}"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": USER_AGENT,
+            "Authorization": f"Bearer {self.token}",
+        }
+
+        payload = data
+        if data is not None and content_type == "application/json":
+            payload = json.dumps(data).encode("utf-8")
+        if payload is not None and content_type:
+            headers["Content-Type"] = content_type
+
+        request = urllib.request.Request(url, data=payload, headers=headers, method=method)
+
+        try:
+            with urllib.request.urlopen(request) as response:
+                raw_body = response.read()
+                content = response.headers.get("Content-Type", "")
+                if "application/json" in content:
+                    if raw_body:
+                        return response.status, json.loads(raw_body.decode("utf-8"))
+                    return response.status, {}
+                return response.status, raw_body
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {"message": exc.reason}
+            except json.JSONDecodeError:
+                payload = {"message": body.decode("utf-8", errors="ignore")}
+            return exc.code, payload
+
+    def ensure_release(self, version: str) -> dict:
+        tag_name = f"v{version}"
+        status, data = self._request(
+            "GET",
+            f"/repos/{self.owner}/{self.repo}/releases/tags/{tag_name}",
+        )
+
+        if status == 200:
+            return data
+        if status != 404:
+            message = data.get("message") if isinstance(data, dict) else data
+            raise RuntimeError(f"Falha ao localizar release existente: {message}")
+
+        release_payload = {
+            "tag_name": tag_name,
+            "name": f"Versão {version}",
+            "body": f"Build gerada automaticamente em {datetime.now():%Y-%m-%d %H:%M}",
+            "draft": False,
+            "prerelease": False,
+        }
+        status, data = self._request(
+            "POST",
+            f"/repos/{self.owner}/{self.repo}/releases",
+            data=release_payload,
+        )
+        if status not in (200, 201):
+            message = data.get("message") if isinstance(data, dict) else data
+            raise RuntimeError(f"Não foi possível criar a release: {message}")
+        return data
+
+    def _delete_asset(self, asset_id: int) -> None:
+        status, data = self._request(
+            "DELETE",
+            f"/repos/{self.owner}/{self.repo}/releases/assets/{asset_id}",
+            content_type=None,
+        )
+        if status not in (200, 204, 404):
+            message = data.get("message") if isinstance(data, dict) else data
+            raise RuntimeError(f"Não foi possível remover o asset antigo: {message}")
+
+    def upload_asset(self, release: dict, file_path: Path) -> None:
+        asset_name = file_path.name
+        existing_assets = {asset.get("name"): asset for asset in release.get("assets", [])}
+        if asset_name in existing_assets:
+            asset_id = existing_assets[asset_name].get("id")
+            if asset_id is not None:
+                self._delete_asset(asset_id)
+
+        upload_path = f"/repos/{self.owner}/{self.repo}/releases/{release['id']}/assets?{urllib.parse.urlencode({'name': asset_name})}"
+        with open(file_path, "rb") as file_handle:
+            binary = file_handle.read()
+
+        status, data = self._request(
+            "POST",
+            upload_path,
+            data=binary,
+            base="https://uploads.github.com",
+            content_type="application/octet-stream",
+        )
+        if status not in (200, 201):
+            message = data.get("message") if isinstance(data, dict) else data
+            raise RuntimeError(f"Falha ao enviar '{asset_name}' para a release: {message}")
+
+        print(f"Asset '{asset_name}' enviado com sucesso para a release.")
+
+
+def write_update_config(owner: Optional[str], repo: Optional[str]) -> None:
+    if not owner or not repo:
+        return
+
+    config_path = DIST_DIR / UPDATE_CONFIG_NAME
+    payload = {
+        "owner": owner,
+        "repo": repo,
+        "executable": EXECUTABLE_NAME,
+        "version_file": VERSION_FILE_NAME,
+    }
+    try:
+        with open(config_path, "w", encoding="utf-8") as file_handle:
+            json.dump(payload, file_handle, indent=2)
+        print(f"Arquivo de configuração de atualização gerado em {config_path}.")
+    except OSError as exc:
+        print(f"Não foi possível escrever o arquivo de configuração de atualização: {exc}")
+
+
+def update_repo_constants(app_file: str, owner: Optional[str], repo: Optional[str]) -> None:
+    if not owner or not repo:
+        return
+
+    try:
+        with open(app_file, "r", encoding="utf-8") as file_handle:
+            content = file_handle.read()
+    except OSError as exc:
+        print(f"Não foi possível ler {app_file} para atualizar constantes do GitHub: {exc}")
+        return
+
+    new_content = re.sub(
+        r'DEFAULT_GITHUB_OWNER\s*=\s*"[^"]*"',
+        f'DEFAULT_GITHUB_OWNER = "{owner}"',
+        content,
+        count=1,
+    )
+    new_content = re.sub(
+        r'DEFAULT_GITHUB_REPO\s*=\s*"[^"]*"',
+        f'DEFAULT_GITHUB_REPO = "{repo}"',
+        new_content,
+        count=1,
+    )
+
+    try:
+        with open(app_file, "w", encoding="utf-8") as file_handle:
+            file_handle.write(new_content)
+        print("Constantes de repositório padrão atualizadas no aplicativo.")
+    except OSError as exc:
+        print(f"Não foi possível atualizar {app_file} com os dados do repositório: {exc}")
+
+
+def publish_to_github(version: str, assets: List[Path], config: dict) -> None:
+    token = config.get("token")
+    owner = config.get("owner")
+    repo = config.get("repo")
+
+    if not token:
+        print("Token do GitHub não disponível. Upload da release ignorado.")
+        return
+    if not owner or not repo:
+        print("Informações do repositório ausentes. Upload da release ignorado.")
+        return
+
+    publisher = GithubReleasePublisher(owner, repo, token)
+    try:
+        release = publisher.ensure_release(version)
+        for asset in assets:
+            publisher.upload_asset(release, asset)
+        release_url = release.get("html_url")
+        if release_url:
+            print(f"Arquivos publicados em {release_url}")
+        else:
+            print("Upload para o GitHub concluído com sucesso.")
+    except Exception as exc:
+        print(f"Falha ao publicar no GitHub Releases: {exc}")
+
+
+def main() -> None:
     new_version = update_version_in_file(APP_FILE)
-    # Agora compila
+
     subprocess.run(
-        ['pyinstaller', '--onefile', '--noconsole', '--icon=assets/icon.ico', APP_FILE],
+        [
+            "pyinstaller",
+            "--onefile",
+            "--noconsole",
+            "--icon=assets/icon.ico",
+            APP_FILE,
+        ],
         check=True,
     )
 
-    source_executable = DIST_DIR / 'app_ui.exe'
-    if source_executable.exists():
-        target_executable = DIST_DIR / EXECUTABLE_NAME
-        shutil.copy2(source_executable, target_executable)
-        print(f'Executável copiado para {target_executable}')
+    source_executable = DIST_DIR / SOURCE_EXECUTABLE_NAME
+    if not source_executable.exists():
+        print(
+            "Executável gerado não encontrado. Certifique-se de que o PyInstaller concluiu a compilação com sucesso."
+        )
+        sys.exit(1)
 
-        if new_version:
-            version_file = DIST_DIR / VERSION_FILE_NAME
-            version_file.write_text(new_version, encoding='utf-8')
-            print(f'Arquivo de versão atualizado em {version_file}')
+    target_executable = DIST_DIR / EXECUTABLE_NAME
+    shutil.copy2(source_executable, target_executable)
+    print(f"Executável copiado para {target_executable}")
 
-        drive_service = create_drive_service()
-        upload_file(drive_service, str(target_executable), EXECUTABLE_NAME)
-        if new_version:
-            upload_file(drive_service, str(version_file), VERSION_FILE_NAME)
+    if new_version:
+        version_file = DIST_DIR / VERSION_FILE_NAME
+        version_file.write_text(new_version, encoding="utf-8")
+        print(f"Arquivo de versão atualizado em {version_file}")
     else:
-        print('Executável gerado não encontrado. Certifique-se de que o PyInstaller concluiu a compilação com sucesso.')
+        version_file = None
+
+    release_config = load_release_config()
+    owner, repo = resolve_repository_coordinates(release_config)
+
+    update_repo_constants(APP_FILE, owner, repo)
+    write_update_config(owner, repo)
+
+    assets = [target_executable]
+    if version_file:
+        assets.append(version_file)
+
+    if release_config and new_version:
+        publish_to_github(new_version, assets, release_config)
+    elif release_config and not new_version:
+        print("Não foi possível determinar a versão. Upload da release não será realizado.")
+    else:
+        print("Configuração do GitHub ausente. Upload da release não será realizado.")
+
+
+if __name__ == "__main__":
+    main()
