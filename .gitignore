@@ -1,1 +1,12 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+
+# Distribution / build artifacts
+build/
 dist/
+*.exe
+
+# Updater metadata generated during builds
+update_config.json
+.github_release_config.json
