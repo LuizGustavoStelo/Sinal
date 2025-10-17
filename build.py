@@ -344,18 +344,28 @@ class GithubReleasePublisher:
             f"{message}"
         )
 
-    def ensure_release(self, version: str) -> dict:
+    def _fetch_release_by_tag(self, version: str) -> Optional[dict]:
         tag_name = f"v{version}"
         status, data = self._request(
             "GET",
             f"/repos/{self.owner}/{self.repo}/releases/tags/{tag_name}",
         )
 
-        if status == 200:
+        if status == 200 and isinstance(data, dict):
             return data
-        if status != 404:
-            message = _format_github_error(data)
-            raise RuntimeError(f"Falha ao localizar release existente: {message}")
+        if status == 404:
+            return None
+
+        message = _format_github_error(data)
+        if status == 401:
+            raise RuntimeError(
+                "Credenciais inválidas ao tentar consultar releases existentes: "
+                f"{message}"
+            )
+        raise RuntimeError(f"Falha ao consultar releases existentes: {message}")
+
+    def ensure_release(self, version: str) -> dict:
+        tag_name = f"v{version}"
 
         target_commitish: Optional[str] = None
         try:
@@ -377,15 +387,39 @@ class GithubReleasePublisher:
         }
         if target_commitish:
             release_payload["target_commitish"] = target_commitish
+
         status, data = self._request(
             "POST",
             f"/repos/{self.owner}/{self.repo}/releases",
             data=release_payload,
         )
-        if status not in (200, 201):
-            message = _format_github_error(data)
-            raise RuntimeError(f"Não foi possível criar a release: {message}")
-        return data
+
+        if status in (200, 201) and isinstance(data, dict):
+            print(f"Release '{tag_name}' criada no GitHub.")
+            return data
+
+        message = _format_github_error(data)
+
+        if status in (409, 422):
+            existing = self._fetch_release_by_tag(version)
+            if existing:
+                print(
+                    "Release já existente encontrada para a tag "
+                    f"'{tag_name}'. Atualizando os assets."
+                )
+                return existing
+            raise RuntimeError(
+                "O GitHub sinalizou que a release já existe, mas não foi possível "
+                f"carregar seus dados: {message}"
+            )
+
+        if status == 401:
+            raise RuntimeError(
+                "Não foi possível criar a release devido a credenciais inválidas: "
+                f"{message}"
+            )
+
+        raise RuntimeError(f"Não foi possível criar a release: {message}")
 
     def _delete_asset(self, asset_id: int) -> None:
         status, data = self._request(
@@ -509,6 +543,11 @@ def publish_to_github(version: str, assets: List[Path], config: dict) -> None:
                 "Para tokens clássicos, habilite o escopo 'repo'. Para tokens granulares, "
                 "marque 'Contents: Read and write' e 'Metadata: Read-only' para o repositório "
                 "de releases."
+            )
+        if "bad credentials" in message.lower() or "credenciais inválidas" in message.lower():
+            print(
+                "O GitHub retornou 'Bad credentials'. Gere um novo token ou atualize o "
+                "token configurado em .github_release_config.json / variáveis de ambiente."
             )
         if "target_commitish" in message or "branch" in message.lower():
             print(
