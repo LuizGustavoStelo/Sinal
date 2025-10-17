@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 
 APP_FILE = "app_ui.py"
@@ -22,16 +22,42 @@ UPDATE_CONFIG_NAME = "update_config.json"
 USER_AGENT = "Sinal-Build-Script"
 
 
+def _normalize_version(version: Optional[str]) -> str:
+    if not version:
+        return ""
+    cleaned = version.strip()
+    if cleaned.lower().startswith("v"):
+        cleaned = cleaned[1:]
+    return cleaned
+
+
+def _parse_version_tuple(version: str) -> Tuple[int, ...]:
+    normalized = _normalize_version(version)
+    parts = [part for part in normalized.split(".") if part]
+    if not parts:
+        raise ValueError("Versão vazia")
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise ValueError(f"Versão inválida: {version}") from exc
+
+
 def increment_version(version_str: str) -> str:
-    # Assume formato x.y.z
-    parts = version_str.split('.')
-    if len(parts) == 3:
-        parts[2] = str(int(parts[2]) + 1)
-        return '.'.join(parts)
-    return version_str
+    try:
+        parts = list(_parse_version_tuple(version_str))
+    except ValueError:
+        return version_str
+    parts[-1] += 1
+    return ".".join(str(part) for part in parts)
 
 
-def update_version_in_file(file_path: str) -> Optional[str]:
+def _format_version_tuple(parts: Sequence[int]) -> str:
+    return ".".join(str(part) for part in parts)
+
+
+def update_version_in_file(
+    file_path: str, baseline_version: Optional[str] = None
+) -> Optional[str]:
     with open(file_path, "r", encoding="utf-8") as file_handle:
         content = file_handle.read()
 
@@ -42,7 +68,19 @@ def update_version_in_file(file_path: str) -> Optional[str]:
         return None
 
     old_version = match.group(1)
-    new_version = increment_version(old_version)
+
+    comparison_base = old_version
+    if baseline_version:
+        try:
+            remote_tuple = _parse_version_tuple(baseline_version)
+            local_tuple = _parse_version_tuple(old_version)
+        except ValueError:
+            remote_tuple = None
+            local_tuple = None
+        if remote_tuple and local_tuple and remote_tuple >= local_tuple:
+            comparison_base = _format_version_tuple(remote_tuple)
+
+    new_version = increment_version(comparison_base)
     new_content = content.replace(
         f'APP_VERSION = "{old_version}"', f'APP_VERSION = "{new_version}"'
     )
@@ -50,6 +88,11 @@ def update_version_in_file(file_path: str) -> Optional[str]:
     with open(file_path, "w", encoding="utf-8") as file_handle:
         file_handle.write(new_content)
 
+    if comparison_base != old_version:
+        print(
+            "Versão local ajustada para acompanhar a release mais recente disponível "
+            f"({baseline_version})."
+        )
     print(f"Versão atualizada de {old_version} para {new_version}")
     return new_version
 
@@ -149,6 +192,61 @@ def resolve_repository_coordinates(config: Optional[dict]) -> Tuple[Optional[str
         return fallback["owner"], fallback["repo"]
 
     return None, None
+
+
+def fetch_remote_latest_version(
+    owner: Optional[str], repo: Optional[str], token: Optional[str]
+) -> Optional[str]:
+    if not owner or not repo:
+        return None
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=20"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": USER_AGENT,
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = urllib.request.Request(url, headers=headers, method="GET")
+
+    try:
+        with urllib.request.urlopen(request) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        print(
+            "Não foi possível consultar as releases existentes no GitHub "
+            f"({exc.code} {exc.reason}). Continuando com a versão local."
+        )
+        return None
+    except urllib.error.URLError as exc:
+        print(
+            "Não foi possível conectar ao GitHub para verificar a versão atual: "
+            f"{exc}"
+        )
+        return None
+
+    if not isinstance(payload, list):
+        return None
+
+    latest: Optional[Tuple[Tuple[int, ...], str]] = None
+    for release in payload:
+        if not isinstance(release, dict):
+            continue
+        if release.get("draft") or release.get("prerelease"):
+            continue
+        tag = release.get("tag_name") or ""
+        normalized = _normalize_version(str(tag))
+        try:
+            version_tuple = _parse_version_tuple(normalized)
+        except ValueError:
+            continue
+        if latest is None or version_tuple > latest[0]:
+            latest = (version_tuple, _format_version_tuple(version_tuple))
+
+    if latest:
+        return latest[1]
+    return None
 
 
 def _format_github_error(payload: object) -> str:
@@ -420,7 +518,15 @@ def publish_to_github(version: str, assets: List[Path], config: dict) -> None:
 
 
 def main() -> None:
-    new_version = update_version_in_file(APP_FILE)
+    release_config = load_release_config()
+    owner, repo = resolve_repository_coordinates(release_config)
+    token = release_config.get("token") if release_config else None
+
+    baseline_version = fetch_remote_latest_version(owner, repo, token)
+    if baseline_version:
+        print(f"Versão mais recente publicada no GitHub: {baseline_version}")
+
+    new_version = update_version_in_file(APP_FILE, baseline_version)
 
     subprocess.run(
         [
@@ -451,11 +557,7 @@ def main() -> None:
     else:
         version_file = None
 
-    release_config = load_release_config()
-    owner, repo = resolve_repository_coordinates(release_config)
-
     update_repo_constants(APP_FILE, owner, repo)
-    token = release_config.get("token") if release_config else None
 
     write_update_config(owner, repo, token)
 
