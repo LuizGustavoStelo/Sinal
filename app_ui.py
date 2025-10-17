@@ -49,6 +49,14 @@ DEFAULT_GITHUB_OWNER = "LuizGustavoStelo"
 DEFAULT_GITHUB_REPO = "Sinal"
 GITHUB_API_BASE_URL = "https://api.github.com"
 DOWNLOAD_USER_AGENT = "Sinal-Updater"
+
+
+class GitHubAPIError(RuntimeError):
+    """Erro ao acessar a API do GitHub contendo informações adicionais."""
+
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 def add_drop_shadow(widget, blur_radius=16, x_offset=0, y_offset=3, opacity=110):
     shadow = QGraphicsDropShadowEffect(widget)
     shadow.setBlurRadius(blur_radius)
@@ -142,6 +150,7 @@ class UpdateManager:
                     return json.loads(payload.decode("utf-8"))
                 return payload
         except urllib.error.HTTPError as exc:
+            status = getattr(exc, "code", None)
             message = exc.reason
             try:
                 details = exc.read()
@@ -150,9 +159,17 @@ class UpdateManager:
                     message = body.get("message", message)
             except Exception:
                 pass
-            raise RuntimeError(f"Erro ao acessar o GitHub: {message}") from exc
+            if status == 404:
+                message = (
+                    "Nenhuma release foi encontrada para o repositório "
+                    f"{self.repo_owner}/{self.repo_name}. Publique uma release pública "
+                    "ou configure outro repositório para habilitar as atualizações automáticas."
+                )
+            raise GitHubAPIError(f"Erro ao acessar o GitHub: {message}", status=status) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Não foi possível conectar ao GitHub: {exc}") from exc
+            raise GitHubAPIError(
+                f"Não foi possível conectar ao GitHub: {exc}", status=None
+            ) from exc
 
     def _get_latest_release(self):
         if self._cached_latest_release is None:
