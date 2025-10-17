@@ -325,7 +325,9 @@ class GithubReleasePublisher:
         print(f"Asset '{asset_name}' enviado com sucesso para a release.")
 
 
-def write_update_config(owner: Optional[str], repo: Optional[str]) -> None:
+def write_update_config(
+    owner: Optional[str], repo: Optional[str], token: Optional[str] = None
+) -> None:
     if not owner or not repo:
         return
 
@@ -336,6 +338,8 @@ def write_update_config(owner: Optional[str], repo: Optional[str]) -> None:
         "executable": EXECUTABLE_NAME,
         "version_file": VERSION_FILE_NAME,
     }
+    if token:
+        payload["token"] = token
     try:
         with open(config_path, "w", encoding="utf-8") as file_handle:
             json.dump(payload, file_handle, indent=2)
@@ -451,7 +455,9 @@ def main() -> None:
     owner, repo = resolve_repository_coordinates(release_config)
 
     update_repo_constants(APP_FILE, owner, repo)
-    write_update_config(owner, repo)
+    token = release_config.get("token") if release_config else None
+
+    write_update_config(owner, repo, token)
 
     assets = [target_executable]
     if version_file:

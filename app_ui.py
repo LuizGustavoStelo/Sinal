@@ -49,6 +49,14 @@ DEFAULT_GITHUB_OWNER = "LuizGustavoStelo"
 DEFAULT_GITHUB_REPO = "Sinal"
 GITHUB_API_BASE_URL = "https://api.github.com"
 DOWNLOAD_USER_AGENT = "Sinal-Updater"
+
+
+class GitHubAPIError(RuntimeError):
+    """Erro ao acessar a API do GitHub contendo informações adicionais."""
+
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 def add_drop_shadow(widget, blur_radius=16, x_offset=0, y_offset=3, opacity=110):
     shadow = QGraphicsDropShadowEffect(widget)
     shadow.setBlurRadius(blur_radius)
@@ -62,6 +70,7 @@ class UpdateManager:
         self.parent = parent
         self.repo_owner = None
         self.repo_name = None
+        self.token = None
         self._cached_latest_release = None
         try:
             self._load_repository_info()
@@ -86,6 +95,7 @@ class UpdateManager:
     def _load_repository_info(self):
         owner = None
         repo = None
+        token = os.environ.get("SINAL_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
 
         repository_slug = (
             os.environ.get("SINAL_GITHUB_REPOSITORY")
@@ -108,6 +118,8 @@ class UpdateManager:
                         data = json.load(config_file)
                     owner = data.get("owner", owner)
                     repo = data.get("repo", repo)
+                    if not token:
+                        token = data.get("token")
                 except (OSError, json.JSONDecodeError):
                     pass
 
@@ -122,16 +134,24 @@ class UpdateManager:
 
         self.repo_owner = owner
         self.repo_name = repo
+        self.token = token
+
+    def _build_headers(self, accept=None):
+        headers = {
+            "User-Agent": DOWNLOAD_USER_AGENT,
+        }
+        if accept:
+            headers["Accept"] = accept
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
 
     def _github_request(self, path):
         if not self.is_available():
             raise RuntimeError(self._availability_error)
 
         url = f"{GITHUB_API_BASE_URL}{path}"
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": DOWNLOAD_USER_AGENT,
-        }
+        headers = self._build_headers("application/vnd.github+json")
 
         request = urllib.request.Request(url, headers=headers, method="GET")
 
@@ -142,6 +162,7 @@ class UpdateManager:
                     return json.loads(payload.decode("utf-8"))
                 return payload
         except urllib.error.HTTPError as exc:
+            status = getattr(exc, "code", None)
             message = exc.reason
             try:
                 details = exc.read()
@@ -150,14 +171,64 @@ class UpdateManager:
                     message = body.get("message", message)
             except Exception:
                 pass
-            raise RuntimeError(f"Erro ao acessar o GitHub: {message}") from exc
+            if status in (401, 403):
+                if self.token:
+                    message = (
+                        "Falha ao acessar o GitHub com o token configurado. "
+                        "Verifique se o token possui permissão de leitura no "
+                        f"repositório {self.repo_owner}/{self.repo_name}."
+                    )
+                else:
+                    message = (
+                        "Falha ao acessar o GitHub. Configure a variável de ambiente "
+                        "SINAL_GITHUB_TOKEN (ou GITHUB_TOKEN) com um token que tenha "
+                        "permissão de leitura nas releases."
+                    )
+            if status == 404:
+                message = (
+                    "Nenhuma release foi encontrada para o repositório "
+                    f"{self.repo_owner}/{self.repo_name}. Publique uma release pública "
+                    "ou configure outro repositório para habilitar as atualizações automáticas."
+                )
+            raise GitHubAPIError(f"Erro ao acessar o GitHub: {message}", status=status) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Não foi possível conectar ao GitHub: {exc}") from exc
+            raise GitHubAPIError(
+                f"Não foi possível conectar ao GitHub: {exc}", status=None
+            ) from exc
 
     def _get_latest_release(self):
-        if self._cached_latest_release is None:
-            path = f"/repos/{self.repo_owner}/{self.repo_name}/releases/latest"
-            self._cached_latest_release = self._github_request(path)
+        if self._cached_latest_release is not None:
+            return self._cached_latest_release
+
+        path = f"/repos/{self.repo_owner}/{self.repo_name}/releases/latest"
+        try:
+            release = self._github_request(path)
+        except GitHubAPIError as exc:
+            # Continue with the fallback when the repository has releases but none
+            # are marked as the official "latest" entry.
+            if exc.status not in (302, 404):
+                raise
+            release = None
+
+        if release and not release.get("draft") and not release.get("prerelease"):
+            self._cached_latest_release = release
+            return self._cached_latest_release
+
+        releases_path = f"/repos/{self.repo_owner}/{self.repo_name}/releases?per_page=20"
+        releases = self._github_request(releases_path)
+        for candidate in releases:
+            if candidate.get("draft") or candidate.get("prerelease"):
+                continue
+            self._cached_latest_release = candidate
+            break
+
+        if not self._cached_latest_release:
+            raise GitHubAPIError(
+                "Nenhuma release publicada foi encontrada para o repositório "
+                f"{self.repo_owner}/{self.repo_name}.",
+                status=None,
+            )
+
         return self._cached_latest_release
 
     @staticmethod
@@ -172,12 +243,25 @@ class UpdateManager:
         return None
 
     def _download_url(self, url):
-        headers = {"User-Agent": DOWNLOAD_USER_AGENT}
+        headers = self._build_headers("application/octet-stream")
         request = urllib.request.Request(url, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(request) as response:
                 return response.read(), response.headers
         except urllib.error.HTTPError as exc:
+            status = getattr(exc, "code", None)
+            if status in (401, 403):
+                if self.token:
+                    message = (
+                        "Falha ao baixar a atualização com o token configurado. "
+                        "Verifique se o token possui permissão de leitura nos assets da release."
+                    )
+                else:
+                    message = (
+                        "Falha ao baixar a atualização. Configure SINAL_GITHUB_TOKEN (ou GITHUB_TOKEN) "
+                        "com um token que tenha acesso às releases privadas."
+                    )
+                raise RuntimeError(message) from exc
             raise RuntimeError(f"Falha ao baixar '{url}': {exc.reason}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Não foi possível conectar para baixar o arquivo: {exc}") from exc
@@ -210,14 +294,14 @@ class UpdateManager:
         fd, temp_path = tempfile.mkstemp(suffix=".exe")
         os.close(fd)
 
+        request = urllib.request.Request(
+            asset.get("browser_download_url"),
+            headers=self._build_headers("application/octet-stream"),
+            method="GET",
+        )
+
         try:
-            with urllib.request.urlopen(
-                urllib.request.Request(
-                    asset.get("browser_download_url"),
-                    headers={"User-Agent": DOWNLOAD_USER_AGENT},
-                    method="GET",
-                )
-            ) as response, open(temp_path, 'wb') as file_handle:
+            with urllib.request.urlopen(request) as response, open(temp_path, 'wb') as file_handle:
                 total_size = response.headers.get("Content-Length")
                 total_size = int(total_size) if total_size else None
                 downloaded = 0
@@ -237,6 +321,23 @@ class UpdateManager:
                 if progress_callback:
                     progress_callback(100)
             return temp_path
+        except urllib.error.HTTPError as exc:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            status = getattr(exc, "code", None)
+            if status in (401, 403):
+                if self.token:
+                    message = (
+                        "Falha ao baixar a atualização com o token configurado. "
+                        "Verifique se o token possui permissão de leitura nos assets da release."
+                    )
+                else:
+                    message = (
+                        "Falha ao baixar a atualização. Configure SINAL_GITHUB_TOKEN (ou GITHUB_TOKEN) "
+                        "com um token que tenha acesso às releases privadas."
+                    )
+                raise RuntimeError(message) from exc
+            raise RuntimeError(f"Falha ao baixar a atualização: {exc.reason}") from exc
         except Exception:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
