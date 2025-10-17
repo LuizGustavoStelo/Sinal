@@ -62,7 +62,7 @@ class UpdateManager:
         self.parent = parent
         self.repo_owner = None
         self.repo_name = None
-        self._latest_release = None
+        self._cached_latest_release = None
         try:
             self._load_repository_info()
             self._availability_error = None
@@ -154,18 +154,18 @@ class UpdateManager:
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Não foi possível conectar ao GitHub: {exc}") from exc
 
-    def _latest_release(self):
-        if self._latest_release is None:
+    def _get_latest_release(self):
+        if self._cached_latest_release is None:
             path = f"/repos/{self.repo_owner}/{self.repo_name}/releases/latest"
-            self._latest_release = self._github_request(path)
-        return self._latest_release
+            self._cached_latest_release = self._github_request(path)
+        return self._cached_latest_release
 
     @staticmethod
     def _version_tuple(version):
         return tuple(int(part) for part in version.strip().split('.'))
 
     def _find_asset(self, name):
-        release = self._latest_release()
+        release = self._get_latest_release()
         for asset in release.get("assets", []):
             if asset.get("name") == name:
                 return asset
@@ -188,7 +188,7 @@ class UpdateManager:
             content, _ = self._download_url(asset.get("browser_download_url"))
             return content.decode("utf-8").strip()
 
-        release = self._latest_release()
+        release = self._get_latest_release()
         tag = release.get("tag_name", "")
         if tag.lower().startswith("v"):
             tag = tag[1:]
