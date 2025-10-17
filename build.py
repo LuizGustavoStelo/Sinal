@@ -8,7 +8,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from getpass import getpass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -120,62 +119,24 @@ def _load_config_from_file() -> Optional[dict]:
     return config
 
 
-def _prompt_for_config() -> Optional[dict]:
-    if not sys.stdin.isatty():
-        print("Configuração do GitHub não encontrada e entrada não interativa. Pulando upload.")
-        return None
-
-    print("Configuração do GitHub Releases não encontrada.")
-    repo_slug = input(
-        "Informe o repositório de destino (formato dono/repositorio) ou pressione Enter para ignorar o upload: "
-    ).strip()
-
-    if not repo_slug:
-        print("Upload para o GitHub Releases será ignorado nesta compilação.")
-        return None
-
-    try:
-        owner, repo = _parse_repo_slug(repo_slug)
-    except ValueError as exc:
-        print(exc)
-        return None
-
-    token = getpass(
-        "Informe um token pessoal do GitHub com permissão de repo (o texto não será exibido). Pressione Enter para cancelar: "
-    ).strip()
-
-    if not token:
-        print("Token não informado. Upload para o GitHub Releases será ignorado.")
-        return None
-
-    config = {"owner": owner, "repo": repo, "token": token}
-    try:
-        with open(RELEASE_CONFIG_PATH, "w", encoding="utf-8") as file_handle:
-            json.dump(config, file_handle, indent=2)
-        print(f"Configuração salva em {RELEASE_CONFIG_PATH.resolve()}.")
-    except OSError as exc:
-        print(f"Não foi possível salvar a configuração localmente: {exc}")
-
-    return config
-
-
 def load_release_config() -> Optional[dict]:
     env_config = _load_config_from_env()
-    if env_config and env_config.get("token"):
-        return env_config
-
     file_config = _load_config_from_file()
-    if file_config and file_config.get("token"):
-        return file_config
+    prioritized = [
+        config
+        for config in (env_config, file_config)
+        if config and config.get("token")
+    ]
+    if prioritized:
+        return prioritized[0]
 
-    prompt_config = _prompt_for_config()
-    if prompt_config and prompt_config.get("token"):
-        return prompt_config
+    fallback = env_config or file_config
+    if fallback:
+        return fallback
 
-    if env_config:
-        return env_config
-    if file_config:
-        return file_config
+    print(
+        "Configuração do GitHub Releases não encontrada. Configure variáveis de ambiente ou o arquivo .github_release_config.json para habilitar o upload automático."
+    )
     return None
 
 
