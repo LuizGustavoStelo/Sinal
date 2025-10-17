@@ -46,7 +46,7 @@ VERSION_FILE_NAME = "versao.txt"
 REMOTE_EXECUTABLE_NAME = "Sinal.exe"
 UPDATE_CONFIG_FILE = "update_config.json"
 DEFAULT_GITHUB_OWNER = "LuizGustavoStelo"
-DEFAULT_GITHUB_REPO = "Sinal-releases"
+DEFAULT_GITHUB_REPO = "Sinal"
 GITHUB_API_BASE_URL = "https://api.github.com"
 DOWNLOAD_USER_AGENT = "Sinal-Updater"
 def add_drop_shadow(widget, blur_radius=16, x_offset=0, y_offset=3, opacity=110):
