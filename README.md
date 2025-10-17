@@ -64,3 +64,5 @@ O resultado ficará em `dist/app_ui.exe`. Durante o build, garanta que as depend
   (além de "Metadata: Read-only") para o repositório `LuizGustavoStelo/Sinal-releases`. Armazene o token na variável de ambiente
   `SINAL_GITHUB_TOKEN` (ou `GITHUB_TOKEN`) e mantenha o arquivo `.github_release_config.json` apontando para o repositório de
   releases. Ao executar `compilar.bat`, o build enviará `Sinal.exe` e `versao.txt` como assets da release mais recente.
+- Inicialize o repositório de releases com pelo menos um commit (por exemplo, adicionando um `README.md`) antes de rodar o primeiro
+  build automatizado. O GitHub exige uma branch padrão ativa para aceitar a criação das releases via API.

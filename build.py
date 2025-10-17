@@ -151,6 +151,42 @@ def resolve_repository_coordinates(config: Optional[dict]) -> Tuple[Optional[str
     return None, None
 
 
+def _format_github_error(payload: object) -> str:
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        details: List[str] = []
+        errors = payload.get("errors")
+        if isinstance(errors, list):
+            for error in errors:
+                if isinstance(error, dict):
+                    parts: List[str] = []
+                    resource = error.get("resource")
+                    field = error.get("field")
+                    code = error.get("code")
+                    err_message = error.get("message")
+                    if resource:
+                        parts.append(str(resource))
+                    if field:
+                        parts.append(str(field))
+                    if code:
+                        parts.append(str(code))
+                    if err_message and err_message not in parts:
+                        parts.append(str(err_message))
+                    if parts:
+                        details.append("/".join(parts))
+                elif error:
+                    details.append(str(error))
+        detail_text = "; ".join(details)
+        if message and detail_text:
+            return f"{message} ({detail_text})"
+        if message:
+            return str(message)
+        if detail_text:
+            return detail_text
+        return json.dumps(payload, ensure_ascii=False)
+    return str(payload)
+
+
 class GithubReleasePublisher:
     def __init__(self, owner: str, repo: str, token: str):
         self.owner = owner
@@ -197,6 +233,19 @@ class GithubReleasePublisher:
                 payload = {"message": body.decode("utf-8", errors="ignore")}
             return exc.code, payload
 
+    def _get_repository_details(self) -> dict:
+        status, data = self._request(
+            "GET",
+            f"/repos/{self.owner}/{self.repo}",
+        )
+        if status == 200 and isinstance(data, dict):
+            return data
+        message = _format_github_error(data)
+        raise RuntimeError(
+            "Não foi possível carregar metadados do repositório para publicar a release: "
+            f"{message}"
+        )
+
     def ensure_release(self, version: str) -> dict:
         tag_name = f"v{version}"
         status, data = self._request(
@@ -207,8 +256,19 @@ class GithubReleasePublisher:
         if status == 200:
             return data
         if status != 404:
-            message = data.get("message") if isinstance(data, dict) else data
+            message = _format_github_error(data)
             raise RuntimeError(f"Falha ao localizar release existente: {message}")
+
+        target_commitish: Optional[str] = None
+        try:
+            repo_details = self._get_repository_details()
+            target_commitish = repo_details.get("default_branch")
+            if not target_commitish:
+                print(
+                    "Repositório sem branch padrão detectado. Certifique-se de que o repositório de releases possui pelo menos um commit."
+                )
+        except RuntimeError as exc:
+            print(exc)
 
         release_payload = {
             "tag_name": tag_name,
@@ -217,13 +277,15 @@ class GithubReleasePublisher:
             "draft": False,
             "prerelease": False,
         }
+        if target_commitish:
+            release_payload["target_commitish"] = target_commitish
         status, data = self._request(
             "POST",
             f"/repos/{self.owner}/{self.repo}/releases",
             data=release_payload,
         )
         if status not in (200, 201):
-            message = data.get("message") if isinstance(data, dict) else data
+            message = _format_github_error(data)
             raise RuntimeError(f"Não foi possível criar a release: {message}")
         return data
 
@@ -234,7 +296,7 @@ class GithubReleasePublisher:
             content_type=None,
         )
         if status not in (200, 204, 404):
-            message = data.get("message") if isinstance(data, dict) else data
+            message = _format_github_error(data)
             raise RuntimeError(f"Não foi possível remover o asset antigo: {message}")
 
     def upload_asset(self, release: dict, file_path: Path) -> None:
@@ -257,7 +319,7 @@ class GithubReleasePublisher:
             content_type="application/octet-stream",
         )
         if status not in (200, 201):
-            message = data.get("message") if isinstance(data, dict) else data
+            message = _format_github_error(data)
             raise RuntimeError(f"Falha ao enviar '{asset_name}' para a release: {message}")
 
         print(f"Asset '{asset_name}' enviado com sucesso para a release.")
@@ -345,6 +407,11 @@ def publish_to_github(version: str, assets: List[Path], config: dict) -> None:
                 "Para tokens clássicos, habilite o escopo 'repo'. Para tokens granulares, "
                 "marque 'Contents: Read and write' e 'Metadata: Read-only' para o repositório "
                 "de releases."
+            )
+        if "target_commitish" in message or "branch" in message.lower():
+            print(
+                "Confirme se o repositório de releases possui ao menos um commit e uma branch padrão ativa. "
+                "Crie um commit inicial (por exemplo, adicionando um README) antes de tentar publicar a primeira release."
             )
 
 
