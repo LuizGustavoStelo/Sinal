@@ -337,7 +337,15 @@ def publish_to_github(version: str, assets: List[Path], config: dict) -> None:
         else:
             print("Upload para o GitHub concluído com sucesso.")
     except Exception as exc:
-        print(f"Falha ao publicar no GitHub Releases: {exc}")
+        message = str(exc)
+        print(f"Falha ao publicar no GitHub Releases: {message}")
+        if "personal access token" in message.lower():
+            print(
+                "Verifique se o token do GitHub tem permissão de escrita em releases. "
+                "Para tokens clássicos, habilite o escopo 'repo'. Para tokens granulares, "
+                "marque 'Contents: Read and write' e 'Metadata: Read-only' para o repositório "
+                "de releases."
+            )
 
 
 def main() -> None:
