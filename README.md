@@ -59,3 +59,10 @@ O resultado ficará em `dist/app_ui.exe`. Durante o build, garanta que as depend
 - Mantenha a pasta `Musicas/` ou o caminho para os MP3 acessível ao aplicativo para evitar erros de reprodução.
 - O app bloqueia a maximização para preservar o layout pensado para telas pequenas.
 - A verificação automática de músicas considera apenas dias úteis, disparando reproduções pontuais no horário exato (HH:mm).
+- Para que a publicação automática das novas versões funcione, use um token de acesso pessoal do GitHub com permissão de escrita
+  em releases. Tokens _clássicos_ precisam do escopo `repo`; tokens granulares devem liberar pelo menos "Contents: Read and write"
+  (além de "Metadata: Read-only") para o repositório `LuizGustavoStelo/Sinal-releases`. Armazene o token na variável de ambiente
+  `SINAL_GITHUB_TOKEN` (ou `GITHUB_TOKEN`) e mantenha o arquivo `.github_release_config.json` apontando para o repositório de
+  releases. Ao executar `compilar.bat`, o build enviará `Sinal.exe` e `versao.txt` como assets da release mais recente.
+- Inicialize o repositório de releases com pelo menos um commit (por exemplo, adicionando um `README.md`) antes de rodar o primeiro
+  build automatizado. O GitHub exige uma branch padrão ativa para aceitar a criação das releases via API.
