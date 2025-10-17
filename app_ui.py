@@ -35,6 +35,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QTime, QUrl, QDate, QDateTime
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 import sqlite3
 
 
