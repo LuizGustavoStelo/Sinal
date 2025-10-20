@@ -350,21 +350,46 @@ class UpdateManager:
             )
 
         current_executable = os.path.normpath(sys.executable)
+        current_pid = os.getpid()
+        target_directory = os.path.dirname(current_executable)
         update_script_path = os.path.join(self.application_directory(), "atualizar.bat")
 
-        script_content = (
-            "@echo off\n"
-            "setlocal\n"
-            "timeout /t 1 /nobreak >nul\n"
-            f"copy /Y \"{os.path.normpath(downloaded_path)}\" \"{current_executable}\" >nul\n"
-            "if %errorlevel% neq 0 (\n"
-            "    echo Falha ao atualizar o aplicativo.\n"
-            "    exit /b %errorlevel%\n"
-            ")\n"
-            f"del \"{os.path.normpath(downloaded_path)}\"\n"
-            f"start \"\" \"{current_executable}\"\n"
-            "del \"%~f0\"\n"
-        )
+        script_lines = [
+            "@echo off",
+            "setlocal enableextensions",
+            f"set \"SOURCE={os.path.normpath(downloaded_path)}\"",
+            f"set \"TARGET={current_executable}\"",
+            f"set \"TARGET_DIR={target_directory}\"",
+            f"set PID={current_pid}",
+            ":wait_for_exit",
+            "timeout /t 1 /nobreak >nul",
+            "tasklist /FI \"PID eq %PID%\" | findstr /I \"%PID%\" >nul",
+            "if %errorlevel%==0 goto wait_for_exit",
+            "if not exist \"%TARGET_DIR%\" goto fail_directory",
+            ":copy_update",
+            "if not exist \"%SOURCE%\" goto fail_source",
+            "copy /Y \"%SOURCE%\" \"%TARGET%\" >nul",
+            "if %errorlevel% neq 0 (",
+            "    timeout /t 1 /nobreak >nul",
+            "    goto copy_update",
+            ")",
+            "del \"%SOURCE%\" >nul 2>&1",
+            "pushd \"%TARGET_DIR%\" >nul",
+            "start \"\" \"%TARGET%\"",
+            "popd >nul",
+            "del \"%~f0\"",
+            "exit /b 0",
+            ":fail_source",
+            "echo Arquivo de atualização não encontrado: %SOURCE%>&2",
+            "goto fail_common",
+            ":fail_directory",
+            "echo Diretório de destino não encontrado: %TARGET_DIR%>&2",
+            ":fail_common",
+            "timeout /t 5 >nul",
+            "exit /b 1",
+        ]
+
+        script_content = "\r\n".join(script_lines) + "\r\n"
 
         with open(update_script_path, 'w', encoding='utf-8') as script_file:
             script_file.write(script_content)
