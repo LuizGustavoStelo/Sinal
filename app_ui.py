@@ -350,19 +350,27 @@ class UpdateManager:
             )
 
         current_executable = os.path.normpath(sys.executable)
+        current_pid = os.getpid()
         update_script_path = os.path.join(self.application_directory(), "atualizar.bat")
 
         script_content = (
             "@echo off\n"
             "setlocal\n"
+            f"set SOURCE=\"{os.path.normpath(downloaded_path)}\"\n"
+            f"set TARGET=\"{current_executable}\"\n"
+            f"set PID={current_pid}\n"
+            ":wait_for_exit\n"
             "timeout /t 1 /nobreak >nul\n"
-            f"copy /Y \"{os.path.normpath(downloaded_path)}\" \"{current_executable}\" >nul\n"
+            "tasklist /FI \"PID eq %PID%\" | findstr /I \"%PID%\" >nul\n"
+            "if %errorlevel%==0 goto wait_for_exit\n"
+            ":copy_update\n"
+            "copy /Y %SOURCE% %TARGET% >nul\n"
             "if %errorlevel% neq 0 (\n"
-            "    echo Falha ao atualizar o aplicativo.\n"
-            "    exit /b %errorlevel%\n"
+            "    timeout /t 1 /nobreak >nul\n"
+            "    goto copy_update\n"
             ")\n"
-            f"del \"{os.path.normpath(downloaded_path)}\"\n"
-            f"start \"\" \"{current_executable}\"\n"
+            "del %SOURCE%\n"
+            "start \"\" %TARGET%\n"
             "del \"%~f0\"\n"
         )
 
