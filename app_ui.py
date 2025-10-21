@@ -352,29 +352,37 @@ class UpdateManager:
         current_executable = os.path.normpath(sys.executable)
         current_pid = os.getpid()
         target_directory = os.path.dirname(current_executable)
+        executable_name = os.path.basename(current_executable)
         update_script_path = os.path.join(self.application_directory(), "atualizar.bat")
 
         script_lines = [
             "@echo off",
             "setlocal enableextensions",
+            "chcp 65001 >nul",
             f"set \"SOURCE={os.path.normpath(downloaded_path)}\"",
-            f"set \"TARGET={current_executable}\"",
             f"set \"TARGET_DIR={target_directory}\"",
+            f"set \"TARGET_FILE={executable_name}\"",
+            "set \"TARGET=%TARGET_DIR%\\%TARGET_FILE%\"",
+            "set \"PUSHD_DONE=\"",
             f"set PID={current_pid}",
             ":wait_for_exit",
             "timeout /t 1 /nobreak >nul",
             "tasklist /FI \"PID eq %PID%\" | findstr /I \"%PID%\" >nul",
             "if %errorlevel%==0 goto wait_for_exit",
+            "if not exist \"%TARGET_DIR%\" (",
+            "    mkdir \"%TARGET_DIR%\" >nul 2>&1",
+            ")",
             "if not exist \"%TARGET_DIR%\" goto fail_directory",
-            ":copy_update",
             "if not exist \"%SOURCE%\" goto fail_source",
-            "copy /Y \"%SOURCE%\" \"%TARGET%\" >nul",
+            "pushd \"%TARGET_DIR%\" >nul || goto fail_directory",
+            "set \"PUSHD_DONE=1\"",
+            ":copy_update",
+            "copy /Y \"%SOURCE%\" \"%TARGET_FILE%\" >nul",
             "if %errorlevel% neq 0 (",
             "    timeout /t 1 /nobreak >nul",
             "    goto copy_update",
             ")",
             "del \"%SOURCE%\" >nul 2>&1",
-            "pushd \"%TARGET_DIR%\" >nul",
             "start \"\" \"%TARGET%\"",
             "popd >nul",
             "del \"%~f0\"",
@@ -385,13 +393,14 @@ class UpdateManager:
             ":fail_directory",
             "echo Diretório de destino não encontrado: %TARGET_DIR%>&2",
             ":fail_common",
+            "if defined PUSHD_DONE popd >nul",
             "timeout /t 5 >nul",
             "exit /b 1",
         ]
 
         script_content = "\r\n".join(script_lines) + "\r\n"
 
-        with open(update_script_path, 'w', encoding='utf-8') as script_file:
+        with open(update_script_path, 'w', encoding='utf-8-sig') as script_file:
             script_file.write(script_content)
 
         subprocess.Popen(['cmd', '/c', update_script_path], shell=False)
