@@ -1132,11 +1132,6 @@ class InfoDialog(QDialog):
             )
             return
 
-        QMessageBox.information(
-            self,
-            "Atualização",
-            "Atualização concluída com sucesso. O aplicativo será reiniciado.",
-        )
         self.accept()
         QApplication.instance().quit()
 
