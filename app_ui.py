@@ -357,6 +357,7 @@ class UpdateManager:
         script_lines = [
             "@echo off",
             "setlocal enableextensions",
+            "chcp 65001 >nul",
             f"set \"SOURCE={os.path.normpath(downloaded_path)}\"",
             f"set \"TARGET={current_executable}\"",
             f"set \"TARGET_DIR={target_directory}\"",
@@ -366,8 +367,8 @@ class UpdateManager:
             "tasklist /FI \"PID eq %PID%\" | findstr /I \"%PID%\" >nul",
             "if %errorlevel%==0 goto wait_for_exit",
             "if not exist \"%TARGET_DIR%\" goto fail_directory",
-            ":copy_update",
             "if not exist \"%SOURCE%\" goto fail_source",
+            ":copy_update",
             "copy /Y \"%SOURCE%\" \"%TARGET%\" >nul",
             "if %errorlevel% neq 0 (",
             "    timeout /t 1 /nobreak >nul",
@@ -391,7 +392,7 @@ class UpdateManager:
 
         script_content = "\r\n".join(script_lines) + "\r\n"
 
-        with open(update_script_path, 'w', encoding='utf-8') as script_file:
+        with open(update_script_path, 'w', encoding='utf-8-sig') as script_file:
             script_file.write(script_content)
 
         subprocess.Popen(['cmd', '/c', update_script_path], shell=False)
